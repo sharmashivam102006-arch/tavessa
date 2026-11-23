@@ -15,6 +15,7 @@ import { OrdersPage } from "@/features/guest/OrdersPage";
 import { OrderTrackingPage } from "@/features/guest/OrderTrackingPage";
 import { KitchenLayout } from "@/features/kitchen/KitchenLayout";
 import { KitchenPage } from "@/features/kitchen/KitchenPage";
+import { StaffLayout } from "@/features/staff/StaffLayout";
 import { StaffPage } from "@/features/staff/StaffPage";
 
 /** Routes (docs/architecture.md § 4.2).
@@ -24,22 +25,13 @@ import { StaffPage } from "@/features/staff/StaffPage";
  * The demo token "demo" opens the labelled Zaika sample menu
  * (Table 5 preview) — it is never presented as a verified session.
  * /kitchen likewise sits OUTSIDE AppLayout in its own full-width
- * KitchenLayout (Stage 4). Staff/admin keep their Stage 1 shells. */
+ * KitchenLayout (Stage 4), and /staff in its own StaffLayout
+ * (Stage 5). Admin keeps its Stage 1 shell. */
 export const router = createBrowserRouter([
   {
     element: <AppLayout />,
     children: [
       { path: "/", element: <HomePage /> },
-      {
-        path: "/staff",
-        element: (
-          <RoleLayout
-            title="Waiter / Staff"
-            hint="Floor map, orders, help calls, cash collection."
-          />
-        ),
-        children: [{ index: true, element: <StaffPage /> }],
-      },
       {
         path: "/admin",
         element: (
@@ -52,6 +44,14 @@ export const router = createBrowserRouter([
       },
       { path: "/login", element: <RoleLayout title="Sign in" hint="Staff and owner sign-in arrives in Stage 3." /> },
     ],
+  },
+  {
+    // The staff board is full-width: it sits OUTSIDE AppLayout in
+    // its own StaffLayout (like the KDS) — AppLayout's max-w-5xl is
+    // too narrow for a floor grid + orders + help calls.
+    path: "/staff",
+    element: <StaffLayout />,
+    children: [{ index: true, element: <StaffPage /> }],
   },
   {
     // The KDS is full-width: it sits OUTSIDE AppLayout in its own

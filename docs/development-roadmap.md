@@ -32,7 +32,7 @@
 | 3.1 | Concurrent idempotency hardening | **Done — 23 Nov 2026, verified.** Session-scoped atomic claim-before-create; genuine 8-thread concurrency test on real Postgres (old code created 8 orders, new code creates 1). See Stage 3.1 report below. |
 | 3.2 | Idempotency crash-recovery hardening | **Done — 23 Nov 2026, verified.** Single-transaction claim+order+response; no separately committed claim for a crash to orphan. See Stage 3.2 report below. |
 | 4 | Kitchen Display System | **Done — 23 Nov 2026, verified (see Stage 4 report below).** Order-level kitchen API + WebSocket + KDS board. |
-| 5 | Waiter / Staff dashboard | Not started |
+| 5 | Waiter / Staff dashboard | **Done — 23 Nov 2026, verified (see Stage 5 report below).** Floor grid, active orders, serving (ready → served), help calls (acknowledge → resolve), staff WebSocket channel. |
 | 6 | Billing & cash payments | Not started |
 | 7 | Owner / Admin dashboard | Not started |
 | 8 | Real-time integration & synchronisation | Not started |
@@ -451,35 +451,125 @@ the same room).
 
 ## Stage 5 — Waiter / Staff dashboard
 
+**Status: Done — 23 Nov 2026 (verified).** Staff API
+(`GET /staff/restaurants`, `GET /staff/tables`,
+`GET /staff/tables/:id`, `GET /staff/orders`,
+`PATCH /staff/orders/:id/serve`, `GET /staff/help-calls`,
+`PATCH /staff/help-calls/:id/acknowledge`,
+`PATCH /staff/help-calls/:id/resolve`) + WebSocket
+`GET /ws/staff` + full-width staff board at `/staff` (floor grid,
+table detail, "Ready to serve" first, help-call queue). Dev-only
+access: `STAFF_DEV_KEY` / `VITE_STAFF_DEV_KEY` (production
+returns 503 until staff auth lands). Verified: backend pytest 87
+passed / 1 skipped (19 new staff SQLite tests + 1 Postgres
+concurrency test: 8 simultaneous PATCH serve → exactly 1×200,
+7×409), frontend Vitest 70 passed (23 new staff tests),
+`npm run build` clean, live Postgres verification 29/29 (guest
+order → kitchen ready → staff READY + floor flag → serve 200 with
+`served_at` → kitchen queue no longer shows it; help-call flow
+end-to-end with `help_call.opened` / `acknowledged` / `resolved`
+WS events; invalid serve 409; cross-restaurant 404), 3 real
+screenshots in `docs/stage5-screenshots/`. **No migration** — the
+order model already carried `served_at`/`version` and the help
+call already carried its lifecycle + timestamps.
+
+**Stage 5 recorded deviations (the Stage 5 brief OVERRIDES the
+roadmap/blueprint):**
+1. **NO production JWT auth / login system.** The roadmap lists a
+   "login" UI and Stage 3's deferred auth scope, but the brief § 6
+   explicitly excludes production auth from this stage. Access is a
+   DEVELOPMENT-ONLY staff key (`STAFF_DEV_KEY`, header
+   `X-Staff-Dev-Key`, WS query `?dev_key=…`), exactly like Stage 4's
+   kitchen key. No `/login` implementation, no `users` table, no JWT
+   issuance. A guest table token does NOT grant staff access
+   (tested); the kitchen key does NOT grant staff access (tested),
+   and vice versa. The key is documented as dev-only in README +
+   api-plan.md; it must never be presented as production auth.
+2. **NO bill requests, NO session close, NO table-status
+   transitions, NO staff assignments / "my tables" view, NO
+   payroll/scheduling.** The brief assigns only: floor overview
+   (read), active orders, serving, help calls. Deferred: bill
+   requests + session close → Stage 6; table-status transitions
+   (cleaning/out-of-service) → Stage 6 (table lifecycle); staff
+   assignments / "my tables" → Stage 7 (owner/admin) or a later
+   staff stage — decision still open; payroll/scheduling → out of
+   v1 scope. Serving does NOT close the session and does NOT change
+   the table status (recorded explicitly in api-plan.md § 4.2 and
+   database-design.md § 6).
+3. **Help-call resolve is acknowledged→resolved ONLY**
+   (api-plan.md § 5). A waiter must acknowledge first; open→resolved
+   is a 409, and the frontend enforces the two-step flow (an open
+   call shows only "Acknowledge"). There is no assigned waiter: no
+   `acknowledged_by`/`resolved_by` columns exist and none were
+   added — there is no users system to reference yet.
+4. **Statuses stay LOWERCASE on the wire.** Served transition:
+   ready→served only. Serving sets `served_at`, `version += 1`,
+   and moves non-cancelled items ready→served in ONE transaction
+   under a row lock.
+5. **Floor-map coordinates: simple grid in v1.** Tables 1–10 in
+   number order; no `position_x/y` seeding. The "Decisions needed"
+   question below is answered: grid now, coordinates later if a
+   real floor plan is needed.
+
+**Still open (named):** D1 (tax — still 0, undecided); D5 (session
+expiry — demo-token CLI expiry is provisional at 30 days); D8
+(guest cancellation window — guest cancel still only while
+placed); staff/JWT auth (the dev key is the interim gate); the
+in-process ConnectionManager is single-process only (the staff
+channel reuses the SAME manager as the kitchen — a second `api`
+replica would not receive events; see architecture.md § 6.3);
+guest tracking over WebSocket (Stage 8).
+
 **Goal:** waiters can run the floor from the staff interface — tables, orders,
 help calls, serving, bill requests.
 
-**Work:**
+**Work (as built 23 Nov 2026 — see the report above for what the
+brief deferred):**
 
-- [ ] Backend: floor-map endpoint (`GET /tables` with session/order/call
-  flags), table status transitions, session close, staff assignments.
-- [ ] Frontend (staff): login, floor map (zone-grouped, status colours),
-  table detail (session, orders, bill), incoming-orders list, help-call
-  list (accept/resolve), mark-served flow (only from `ready`), "my tables"
-  view.
-- [ ] Help-call flow end-to-end: guest request → staff list + floor flag →
-  accept (assigned) → resolve → guest sees acknowledgement/resolution.
+- [x] Backend: floor-map endpoint (`GET /staff/tables` with
+  session/order/call flags), table detail (`GET /staff/tables/:id`),
+  active orders (`GET /staff/orders`), serve (`PATCH
+  /staff/orders/:id/serve`), help calls (`GET /staff/help-calls`,
+  acknowledge, resolve). Table status transitions, session close
+  and staff assignments are NOT built — deferred (see report).
+- [x] Frontend (staff): full-width board at `/staff` outside
+  AppLayout (own `StaffLayout`), floor grid (simple grid in number
+  order, status colours), table detail (session, orders, help
+  calls), active-orders list (Ready to serve first), help-call
+  queue (acknowledge → resolve), mark-served flow (ready only,
+  two-step inline confirmation). NO login UI (brief § 6), NO "my
+  tables" view.
+- [x] Help-call flow end-to-end: guest request → staff list +
+  floor flag → acknowledge → resolve → WS events at each step.
+  Accept does NOT assign a waiter (no users system yet); the guest
+  sees acknowledgement/resolution on refresh (guest WS tracking is
+  Stage 8).
 
-**Decisions needed:** floor-map coordinates (are `position_x/y` seeded
-manually for Zaika, or is the map a simple grid in v1?); assignment model
-(does a waiter see only assigned tables, or all tables with assigned ones
-highlighted?).
+**Decisions needed:** floor-map coordinates — ANSWERED: simple
+grid in v1 (tables 1–10 in number order), no `position_x/y`
+seeding; assignment model — still open (does a waiter see only
+assigned tables, or all tables with assigned ones highlighted?).
 
-**Acceptance criteria:**
+**Acceptance criteria (as verified 23 Nov 2026):**
 
-- [ ] A guest help call appears on the staff floor map and list within
-  seconds; accepting assigns it to that waiter and the guest sees the
-  acknowledgement.
-- [ ] Marking an item served before it is `ready` is rejected (`409`).
-- [ ] The floor map correctly shows available / occupied / cleaning /
-  out-of-service across a full visit (open → order → close → cleaning →
-  available).
-- [ ] A waiter cannot see or act on another restaurant's tables (negative test).
+- [x] A guest help call appears on the staff floor map and list
+  within seconds (WS `help_call.opened` → REST re-fetch); the
+  two-step acknowledge → resolve flow works, with a 409 for
+  resolve-from-open. Accept does NOT assign a waiter (deferred —
+  no users system); the guest sees the acknowledgement/resolution
+  on refresh, not live (guest WS tracking is Stage 8).
+- [x] Marking an order served before it is `ready` is rejected
+  (`409`, state unchanged — tested for placed, preparing and
+  served→served).
+- [ ] The floor map correctly shows available / occupied / cleaning
+  / out-of-service across a full visit (open → order → close →
+  cleaning → available). NOT VERIFIED end-to-end: the floor shows
+  available/occupied live, and cleaning/out-of-service badges
+  render, but table-status transitions and session close are not
+  built yet (Stage 6) — a full visit cannot be driven today.
+- [x] A waiter cannot see or act on another restaurant's tables
+  (negative test: cross-restaurant serve/table-detail → 404;
+  two-restaurant isolation on tables/orders/calls).
 
 **Exit gate:** golden-path steps 10–11 work live.
 

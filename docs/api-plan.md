@@ -180,7 +180,7 @@ per-item details (`{ "field": "items[1].variant_id", "code": "invalid_variant" }
 | `GET /orders/:id` | JWT or guest (own session) | Full order with items, ticket statuses, bill link if any. Guest: only if the order belongs to their session, else `403`. |
 | `GET /guest/orders` | `X-Table-Token` | Orders for this session (active + recent). **Stage 3: implemented** — `{ "data": […], "pagination": { "page", "per_page", "total", "total_pages" } }`, `placed_at` desc. |
 | `GET /guest/orders/:id` | `X-Table-Token` | One order of this session, for live tracking. **Stage 3: implemented** — another session's order → `404`. |
-| `PATCH /orders/:id/status` | JWT (kitchen/owner; waiter for `served` only) | Body `{ "status": "accepted" \| "preparing" \| "ready" \| "served" \| "completed" \| "cancelled", "reason": "…" }`. Transition validated against the machine (`database-design.md` § 6); illegal → `409`. Sets the matching `*_at` timestamp. **Not in Stage 3; not in Stage 4 either** — Stage 4 built the kitchen transition as `PATCH /kitchen/orders/:id/status` instead (see § 6: order-level, preparing/ready only, dev-key gated). The staff-wide endpoint lands with staff auth (Stage 5). |
+| `PATCH /orders/:id/status` | JWT (kitchen/owner; waiter for `served` only) | Body `{ "status": "accepted" \| "preparing" \| "ready" \| "served" \| "completed" \| "cancelled", "reason": "…" }`. Transition validated against the machine (`database-design.md` § 6); illegal → `409`. Sets the matching `*_at` timestamp. **Not in Stage 3; not in Stage 4 either** — Stage 4 built the kitchen transition as `PATCH /kitchen/orders/:id/status` instead (see § 6: order-level, preparing/ready only, dev-key gated). **Stage 5 built the serve transition as `PATCH /staff/orders/:id/serve` instead** (see § 5: ready→served only, dev-key gated). The staff-wide endpoint lands with staff auth. |
 | `POST /orders/:id/cancel` | JWT or guest (own session, before `accepted` — per D8) | Body `{ "reason": "…" }`. Cancels the order and its non-served items; recomputes totals; if a bill already exists, the bill must be regenerated (Stage 6 rule). **Stage 3: guest cancel implemented — only while `placed` (D8 still open), else `409`; cancels its items too, same transaction.** |
 | `PATCH /orders/:orderId/items/:itemId/status` | JWT (kitchen/owner; waiter for `served` only) | **Not built — superseded by the Stage 4 order-level decision** (api-plan.md § 6, deviation 1): there is no per-item status endpoint; items move with their order. |
 
@@ -192,18 +192,73 @@ the response, computed server-side).
 
 ## 5. Tables, floor & help calls
 
+> **Stage 5 status (23 Nov 2026): staff half implemented and
+> verified — as built below, which OVERRIDES the blueprint's
+> JWT/assignment design for this stage. Recorded deviations:**
+> 1. **Auth is DEV-ONLY in Stage 5** (same pattern as Stage 4):
+>    staff REST endpoints require header `X-Staff-Dev-Key` equal
+>    to the backend `STAFF_DEV_KEY` (missing → 401, wrong → 403);
+>    the WebSocket takes the same key as query param `?dev_key=…`
+>    (never logged). In production the staff routes return **503
+>    `staff_auth_not_configured`** (WS: close 4403) until staff
+>    auth lands. A guest table token does NOT grant staff access;
+>    the kitchen dev key does NOT grant staff access (and vice
+>    versa). This is development access only — never present it
+>    as production auth.
+> 2. **Serve is its own endpoint** — `PATCH
+>    /staff/orders/:id/serve` (empty body), ready→served only.
+>    Anything else → `409` with `current_status` +
+>    `requested_status` in `error.details`, state unchanged.
+>    Serving sets `served_at`, `version += 1`, and moves
+>    non-cancelled items ready→served in ONE transaction under a
+>    row lock. **Serving does NOT close the session and does NOT
+>    change the table status** — the session stays `active` and
+>    the table stays `occupied` until Stage 6 (billing/session
+>    close).
+> 3. **Help-call resolve is acknowledged→resolved ONLY.** There is
+>    no `PATCH /help-calls/:id/accept` in Stage 5 — the endpoint is
+>    `PATCH /staff/help-calls/:id/acknowledge` (open→acknowledged,
+>    sets `acknowledged_at`) and `PATCH
+>    /staff/help-calls/:id/resolve` (acknowledged→resolved, sets
+>    `resolved_at`); resolving an open call → `409`. Acknowledge
+>    does NOT assign a waiter — no `acknowledged_by`/`resolved_by`
+>    columns exist (no users system yet).
+> 4. **No bill requests, no session close, no table-status
+>    transitions, no staff assignments in Stage 5** — `PATCH
+>    /tables/:id/status`, `POST /tables/:id/close-session` and
+>    assignment (`assigned_to=me`) are NOT built; they belong to
+>    Stage 6 (billing/table lifecycle) and Stage 7 (owner/admin).
+>    The floor is read-only in Stage 5: a simple grid in table
+>    number order (no `position_x/y` coordinates seeded).
+> 5. **Statuses on the wire stay LOWERCASE.**
+>
+> **`restaurant_id` rule (same as kitchen):** required on staff
+> REST endpoints EXCEPT when omitted and exactly one restaurant
+> exists — then that restaurant is used. Omitted with 0 or 2+
+> restaurants → 422 requiring `restaurant_id`. Unknown
+> restaurant → 404.
+
 | Method & path | Auth | Notes |
 |---|---|---|
-| `GET /tables` | JWT (waiter/owner) | Floor map: all tables for the restaurant with status, current session id, open order count, open help call flag. Sorted by zone, then number. |
-| `GET /tables/:id` | JWT (waiter/owner) | Table + active session + its orders + its open bill. |
-| `PATCH /tables/:id/status` | JWT (waiter/owner) | `{ "status": "cleaning" \| "available" \| "out_of_service" }`. `occupied` is system-set, not manually settable (except by owner override — audited, Stage 5). |
-| `POST /tables/:id/close-session` | JWT (waiter/owner) | Close the active session (only when no unpaid bill — else `409` with the bill id). Sets table `cleaning`. |
-| `POST /guest/help-calls` | `X-Table-Token` | **Stage 3: implemented.** Body `{ "type": "waiter" \| "water" \| "plates" \| "order_help", "note": "…" }` — type is case-insensitive, `plates_cutlery` is an alias for `plates`. One open/acknowledged call per session (second call → `409` with the existing call id in `error.details`). Status starts `open`; nothing claims a waiter has accepted it. |
-| `GET /help-calls` | JWT (waiter/owner) | Filters: `status`, `table_id`, `assigned_to=me`. |
-| `GET /help-calls/:id` | JWT | One call. |
-| `PATCH /help-calls/:id/accept` | JWT (waiter/owner) | Assigns to the caller, `open → acknowledged`. Publishes `help_call.acknowledged`. |
-| `PATCH /help-calls/:id/resolve` | JWT (waiter/owner) | `acknowledged → resolved`. Publishes `help_call.resolved`. |
-| `PATCH /help-calls/:id/cancel` | JWT or guest (own session) | `open/acknowledged → cancelled`. |
+| `GET /staff/tables?restaurant_id=` | Staff dev key | **Stage 5: implemented.** Floor grid: all tables for the restaurant, number order. Each row: table number + status (from `dining_tables.status`), active session (`sessionId`/`sessionOpenedAt` or null), `activeOrderCount`, `readyOrderCount`, `latestOrderStatus` (most recent active order), `hasOpenHelpCall`. All derived live from DB state. |
+| `GET /staff/tables/:id?restaurant_id=` | Staff dev key | **Stage 5: implemented.** Table + active session + that session's orders (full snapshots) + open/acknowledged help calls. Unknown id or wrong restaurant → 404. |
+| `GET /staff/orders?restaurant_id=&status=&page=&per_page=` | Staff dev key | **Stage 5: implemented.** Active orders (placed/accepted/preparing/ready), oldest first (`placed_at` asc). `status` is a single active status; unknown value → 422. Each order carries `tableNumber`, server-computed `elapsedSeconds`, full item snapshots. Served orders are NOT in this list (they leave the kitchen queue too). |
+| `PATCH /staff/orders/:id/serve?restaurant_id=` | Staff dev key (rate-limited, 60/min) | **Stage 5: implemented.** Empty body. Only ready→served (see deviation 2 above). Broadcasts `order.status_changed` after commit. |
+| `GET /staff/help-calls?restaurant_id=&status=` | Staff dev key | **Stage 5: implemented.** Unresolved (open+acknowledged) by default, oldest first; `status` filters one status (unknown → 422). Each call carries `tableNumber` + type + note + status + created/acknowledged/resolved timestamps. |
+| `PATCH /staff/help-calls/:id/acknowledge?restaurant_id=` | Staff dev key | **Stage 5: implemented.** open→acknowledged only, else 409. Broadcasts `help_call.acknowledged` after commit. |
+| `PATCH /staff/help-calls/:id/resolve?restaurant_id=` | Staff dev key | **Stage 5: implemented.** acknowledged→resolved only, else 409 (see deviation 3). Broadcasts `help_call.resolved` after commit. |
+| `GET /staff/restaurants` | Staff dev key | **Stage 5: implemented.** Dev-only picker (id + name); the frontend defaults to the only restaurant when there is one. |
+| `GET /ws/staff?restaurant_id=&dev_key=` | Staff dev key (query) | **Stage 5: implemented.** Staff WebSocket — see § 9. Bad/missing key → close 4401, unknown restaurant → 4404, production → close 4403. |
+| `GET /tables` | JWT (waiter/owner) | Floor map: all tables for the restaurant with status, current session id, open order count, open help call flag. Sorted by zone, then number. **Not built — superseded in Stage 5 by `GET /staff/tables` (dev-key gated); the JWT version lands with staff auth.** |
+| `GET /tables/:id` | JWT (waiter/owner) | Table + active session + its orders + its open bill. **Not built — superseded in Stage 5 by `GET /staff/tables/:id` (dev-key gated; no bill until Stage 6).** |
+| `PATCH /tables/:id/status` | JWT (waiter/owner) | `{ "status": "cleaning" \| "available" \| "out_of_service" }`. `occupied` is system-set, not manually settable (except by owner override — audited, Stage 5). **Not built — Stage 6.** |
+| `POST /tables/:id/close-session` | JWT (waiter/owner) | Close the active session (only when no unpaid bill — else `409` with the bill id). Sets table `cleaning`. **Not built — Stage 6.** |
+| `POST /guest/help-calls` | `X-Table-Token` | **Stage 3: implemented.** Body `{ "type": "waiter" \| "water" \| "plates" \| "order_help", "note": "…" }` — type is case-insensitive, `plates_cutlery` is an alias for `plates`. One open/acknowledged call per session (second call → `409` with the existing call id in `error.details`). Status starts `open`; nothing claims a waiter has accepted it. **Stage 5: now also broadcasts `help_call.opened` after the creation transaction commits.** |
+| `GET /help-calls` | JWT (waiter/owner) | Filters: `status`, `table_id`, `assigned_to=me`. **Not built — superseded in Stage 5 by `GET /staff/help-calls` (dev-key gated; no assignment filter yet).** |
+| `GET /help-calls/:id` | JWT | One call. **Not built.** |
+| `PATCH /help-calls/:id/accept` | JWT (waiter/owner) | Assigns to the caller, `open → acknowledged`. Publishes `help_call.acknowledged`. **Not built — superseded in Stage 5 by `PATCH /staff/help-calls/:id/acknowledge` (dev-key gated, no assignment).** |
+| `PATCH /help-calls/:id/resolve` | JWT (waiter/owner) | `acknowledged → resolved`. Publishes `help_call.resolved`. **Not built — superseded in Stage 5 by `PATCH /staff/help-calls/:id/resolve` (dev-key gated).** |
+| `PATCH /help-calls/:id/cancel` | JWT or guest (own session) | `open/acknowledged → cancelled`. **Not built.** |
 
 ## 6. Kitchen (KDS)
 
@@ -361,23 +416,32 @@ GET /ws/table-session?token=<table-token>       # guest (token as query param he
                                                 # to this handshake and is not logged)
 GET /ws/kitchen?restaurant_id=<uuid>&dev_key=<key>   # kitchen — Stage 4, LIVE
                                                 # (dev-only key; never logged)
+GET /ws/staff?restaurant_id=<uuid>&dev_key=<key>     # staff — Stage 5, LIVE
+                                                # (dev-only key; never logged)
 ```
 
-> **Stage 4 status (23 Nov 2026): only `/ws/kitchen` exists.**
-> The staff/guest endpoints above still land in Stage 8. The
-> kitchen socket validates the dev key + restaurant BEFORE accept
-> (bad/missing key → close 4401, unknown restaurant → 4404,
-> production → close 4403 `kitchen_auth_not_configured`) and
-> registers the socket in the in-process `ConnectionManager`
-> (`backend/app/realtime/manager.py`). **Single-process only:**
-> no Redis broker — a second `api` replica would not receive
-> events published here (architecture.md § 6.3). Events published
-> so far: `order.created` (guest order placed, broadcast after the
-> placement transaction commits; replays are NOT broadcast) and
-> `order.status_changed` (kitchen transition, broadcast after the
-> transition commits). A failed/rolled-back request broadcasts
-> nothing. The envelope is § 9.3; `version` is a per-restaurant
-> in-memory counter.
+> **Stage 5 status (23 Nov 2026): `/ws/kitchen` AND `/ws/staff`
+> exist.** The staff/guest endpoints above still land in Stage 8.
+> Both live channels reuse the SAME in-process `ConnectionManager`
+> (`backend/app/realtime/manager.py`) — one manager, two channels
+> (`kitchen:{restaurant_id}` and `staff:{restaurant_id}`); a client
+> on one channel never receives the other's events. Each socket
+> validates the dev key + restaurant BEFORE accept (bad/missing
+> key → close 4401, unknown restaurant → 4404, production → close
+> 4403 `staff_auth_not_configured` / `kitchen_auth_not_configured`).
+> **Single-process only:** no Redis broker — a second `api`
+> replica would not receive events published here (architecture.md
+> § 6.3). Events published so far: `order.created` (guest order
+> placed, broadcast after the placement transaction commits;
+> replays are NOT broadcast — staff on the same restaurant channel
+> receives it), `order.status_changed` (kitchen transition AND
+> staff serve, broadcast after the transition commits — the staff
+> client receives kitchen transitions too), `help_call.opened`
+> (guest help call created, broadcast after commit),
+> `help_call.acknowledged` and `help_call.resolved` (staff
+> actions, broadcast after commit). A failed/rolled-back request
+> broadcasts nothing. The envelope is § 9.3; `version` is a
+> per-restaurant in-memory counter.
 
 Authentication at connect time; failure closes the socket with code `4401`.
 The token is validated and then discarded from logs. (Alternative: a short-lived
@@ -391,6 +455,8 @@ is judged too exposed in logs; record the decision then.)
 | `restaurant:{restaurant_id}` | Staff, kitchen, owner | JWT restaurant matches |
 | `table-session:{session_id}` | Guest of that session; staff viewing that table | Token session matches, or JWT restaurant matches + table in scope |
 | `kitchen:{restaurant_id}:{station_id}` | KDS | JWT role kitchen/owner + station belongs to restaurant |
+| `kitchen:{restaurant_id}` | KDS | **Stage 4, LIVE:** dev key matches + restaurant exists |
+| `staff:{restaurant_id}` | Staff board | **Stage 5, LIVE:** dev key matches + restaurant exists |
 
 A client subscribes by sending `{ "action": "subscribe", "channel": "…" }`
 after connect. Subscribing to a channel it is not authorised for returns an
@@ -404,16 +470,16 @@ All events use the envelope in `architecture.md` § 6.1
 
 | Event | Published when | Channels |
 |---|---|---|
-| `order.created` | Order committed | `restaurant:*`, `kitchen:*` (per station tickets), `table-session:*` |
-| `order.status_changed` | Order status changes | `restaurant:*`, `table-session:*` |
+| `order.created` | Order committed | `restaurant:*`, `kitchen:*` (per station tickets), `table-session:*` — **live on `kitchen:{id}` + `staff:{id}` since Stages 4/5** |
+| `order.status_changed` | Order status changes | `restaurant:*`, `table-session:*` — **live on `kitchen:{id}` + `staff:{id}` since Stages 4/5 (kitchen transitions AND staff serve)** |
 | `order.item_ready` | An item becomes `ready` | `restaurant:*`, `table-session:*` |
 | `order.item_status_changed` | Any item status change | `restaurant:*`, `kitchen:*` |
 | `ticket.created` | Ticket created (with the order) | `kitchen:{station}` |
 | `ticket.status_changed` | Ticket status derived-change | `kitchen:{station}`, `restaurant:*` |
 | `table.status_changed` | Table status changes | `restaurant:*` |
-| `help_call.opened` | Guest requests help | `restaurant:*`, `table-session:*` |
-| `help_call.acknowledged` | Waiter accepts | `restaurant:*`, `table-session:*` |
-| `help_call.resolved` | Waiter resolves | `restaurant:*`, `table-session:*` |
+| `help_call.opened` | Guest requests help | `restaurant:*`, `table-session:*` — **live on `staff:{id}` since Stage 5** |
+| `help_call.acknowledged` | Waiter accepts | `restaurant:*`, `table-session:*` — **live on `staff:{id}` since Stage 5** |
+| `help_call.resolved` | Waiter resolves | `restaurant:*`, `table-session:*` — **live on `staff:{id}` since Stage 5** |
 | `bill.issued` | Bill generated | `restaurant:*`, `table-session:*` |
 | `bill.payment_requested` | Guest selects Pay by Cash | `restaurant:*`, `table-session:*` |
 | `bill.paid` | Bill fully paid | `restaurant:*`, `table-session:*` |

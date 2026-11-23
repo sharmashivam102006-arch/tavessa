@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # kitchen routes refuse to serve at all (503) until staff auth
     # exists. Never commit a real key; the default is dev-only.
     kitchen_dev_key: str = Field(default="dev-kitchen-only", alias="KITCHEN_DEV_KEY")
+    # Waiter / Staff dashboard — DEV-ONLY access key (Stage 5).
+    # Same pattern and same limitation as the kitchen key: a separate
+    # key so a kitchen key does not grant staff access (and vice
+    # versa), refused in production (503) until staff auth lands.
+    staff_dev_key: str = Field(default="dev-staff-only", alias="STAFF_DEV_KEY")
 
     @field_validator("environment")
     @classmethod

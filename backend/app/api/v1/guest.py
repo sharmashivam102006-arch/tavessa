@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_db, get_guest_context
 from app.core.rate_limit import SESSION_OPEN_LIMIT, limiter
+from app.realtime.manager import manager
 from app.schemas.guest import (
     GuestMenuResponse,
     GuestSessionResponse,
@@ -75,9 +76,25 @@ def guest_order(
 
 
 @router.post("/guest/help-calls", response_model=HelpCallDataResponse, status_code=201)
-def create_help_call(
+async def create_help_call(
     body: HelpCallRequest,
     ctx: GuestContext = Depends(get_guest_context),
     db: Session = Depends(get_db),
 ) -> HelpCallDataResponse:
-    return help_service.create_help_call(db, ctx, body)
+    result = help_service.create_help_call(db, ctx, body)
+    # Broadcast AFTER the help-call transaction committed (the
+    # service commits internally before returning). Staff on the
+    # same restaurant channel see it; a failed creation broadcasts
+    # nothing.
+    await manager.broadcast(
+        ctx.restaurant.id,
+        "help_call.opened",
+        ctx.session.table_id,
+        {
+            "help_call_id": str(result.data.id),
+            "table_number": ctx.table.number,
+            "type": result.data.type,
+            "status": result.data.status,
+        },
+    )
+    return result

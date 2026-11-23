@@ -355,3 +355,96 @@ export interface KitchenOrderListResponse {
   data: KitchenOrder[];
   pagination: PaginationInfo;
 }
+
+/* ------------------------------------------------------------------ */
+/* Staff (api-plan.md §§ 4.2, 5, 9 as built in Stage 5)                */
+/* ------------------------------------------------------------------ */
+
+/** A restaurant the staff board can pick (GET /staff/restaurants). */
+export interface StaffRestaurant {
+  id: string;
+  name: string;
+}
+
+/** One floor-grid row (GET /staff/tables): the table's own status
+ * plus LIVE derived operational state — the active session, the
+ * active/ready order counts, the latest active order's status, and
+ * whether an open help call is waiting. All derived from DB state
+ * by the backend; the client never invents a state. */
+export interface StaffTable {
+  id: string;
+  number: number;
+  status: "available" | "occupied" | "cleaning" | "out_of_service";
+  sessionId: string | null;
+  sessionOpenedAt: string | null;
+  activeOrderCount: number;
+  readyOrderCount: number;
+  latestOrderStatus: OrderStatus | null;
+  hasOpenHelpCall: boolean;
+}
+
+/** A help call as the staff board sees it: the guest HelpCall plus
+ * the table number and the acknowledge/resolve timestamps. */
+export interface StaffHelpCall extends HelpCall {
+  tableNumber: number;
+  acknowledgedAt: string | null;
+  resolvedAt: string | null;
+}
+
+/** Table detail (GET /staff/tables/:id): the grid row, the active
+ * session (null when the table is free), that session's orders, and
+ * its open/acknowledged help calls. */
+export interface StaffTableDetail {
+  table: StaffTable;
+  session: GuestSession | null;
+  orders: KitchenOrder[];
+  helpCalls: StaffHelpCall[];
+}
+
+export interface StaffTableListResponse {
+  data: StaffTable[];
+}
+
+export interface StaffTableDetailResponse {
+  data: StaffTableDetail;
+}
+
+export interface StaffOrderListResponse {
+  data: KitchenOrder[];
+  pagination: PaginationInfo;
+}
+
+export interface StaffHelpCallListResponse {
+  data: StaffHelpCall[];
+}
+
+/** WebSocket event envelope for /ws/staff (api-plan.md § 9.3) —
+ * the same envelope as the kitchen channel. `data` carries
+ * identifiers + a summary only — receivers re-fetch via REST. */
+export interface StaffEvent {
+  type:
+    | "order.created"
+    | "order.status_changed"
+    | "help_call.opened"
+    | "help_call.acknowledged"
+    | "help_call.resolved"
+    | string;
+  restaurant_id: string;
+  table_id: string | null;
+  data: {
+    order_id?: string;
+    order_number?: string;
+    status?: string;
+    table_number?: number;
+    help_call_id?: string;
+    type?: string;
+  };
+  version: number;
+  occurred_at: string;
+}
+
+export type StaffConnectionStatus =
+  | "live"
+  | "connecting"
+  | "reconnecting"
+  | "offline";

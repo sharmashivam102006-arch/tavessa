@@ -716,6 +716,19 @@ accepted/preparing → cancelled   (staff/kitchen only, with reason)
 > endpoint and no separate ticket status to derive — see
 > `kitchen_tickets` below. `served`/`completed` are staff-side
 > steps (Stage 5), not kitchen steps.
+>
+> **Stage 5 as implemented (23 Nov 2026):** the staff move is
+> ready → served only, via `PATCH /staff/orders/:id/serve`
+> (empty body). Enforced in `staff_service.serve_order` against
+> the current DB state under a row lock; anything else → 409
+> with current + requested status. The order and its
+> non-cancelled items move together in ONE transaction (items
+> ready → served; `served_at` set; `version` += 1). **Serving
+> does NOT close the session and does NOT change the table
+> status** — the session stays `active` and the table stays
+> `occupied` until Stage 6 (billing/session close). A served
+> order leaves both the kitchen active queue and the staff active
+> list. `completed` is still a Stage 6 step (bill paid).
 
 `completed` is set when the bill is paid (or when staff explicitly complete a
 served order with no bill — Stage 3 detail). Order status is **derived**
@@ -776,6 +789,15 @@ confirmed → voided     (owner void, with reason + audit; money handling per St
 open → acknowledged → resolved
 open → cancelled   (guest or staff)
 ```
+
+> **Stage 5 as implemented (23 Nov 2026):** open→acknowledged via
+> `PATCH /staff/help-calls/:id/acknowledge` (sets
+> `acknowledged_at`), acknowledged→resolved via `PATCH
+> /staff/help-calls/:id/resolve` (sets `resolved_at`). Resolving
+> an open call → 409 — a waiter must acknowledge first. Both
+> under a row lock, one transaction each. Acknowledge does NOT
+> assign a waiter: no `acknowledged_by`/`resolved_by` columns
+> exist (no users system yet). Cancel is not implemented yet.
 
 ### Reviews — `reviews.status`
 

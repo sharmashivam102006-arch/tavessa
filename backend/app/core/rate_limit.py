@@ -15,3 +15,5 @@ ORDER_PLACE_LIMIT = "60/minute"
 # Kitchen status transitions (Stage 4): same generous cap as order
 # placement — it blunts abuse, it does not police the kitchen.
 KITCHEN_PATCH_LIMIT = "60/minute"
+# Staff actions (Stage 5): serving + help-call ack/resolve.
+STAFF_PATCH_LIMIT = "60/minute"

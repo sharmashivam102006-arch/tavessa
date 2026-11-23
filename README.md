@@ -14,7 +14,7 @@ The first demonstration restaurant is **Zaika**. The architecture is SaaS-ready:
 every tenant-scoped record belongs to a restaurant, so a second restaurant can be
 added without a schema redesign.
 
-> **Status: Stage 4 complete (Kitchen Display System) — 23 Nov 2026.** Blueprint + project foundation
+> **Status: Stage 5 complete (Waiter / Staff dashboard) — 23 Nov 2026.** Blueprint + project foundation
 > are done and verified (see "Development setup" below). Stage 2 built the
 > guest interface & digital menu for Zaika as a frontend against the API
 > contract in `docs/api-plan.md`, using clearly-marked sample menu data.
@@ -25,11 +25,15 @@ added without a schema redesign.
 > preview; real table tokens use the real API. Stage 4 added the Kitchen
 > Display System: order-level kitchen API, `order.created` /
 > `order.status_changed` WebSocket events, and the `/kitchen` board
-> (New / Preparing / Ready, ticking elapsed times). Staff/admin are
-> still route shells only, and there are no bills, payments, reviews,
-> or staff login yet (Stages 5–8). Do not treat any endpoint,
-> screen, or workflow in these docs as shipped until its stage in
-> `docs/development-roadmap.md` is marked complete and verified.
+> (New / Preparing / Ready, ticking elapsed times). Stage 5 added the
+> Waiter / Staff dashboard: floor grid, active orders, serving
+> (ready → served), help calls (acknowledge → resolve), and the
+> `/ws/staff` channel — all dev-key gated, no production login yet.
+> The owner/admin dashboard is still a route shell, and there are
+> no bills, payments, reviews, or staff login yet (Stages 6–8).
+> Do not treat any endpoint, screen, or workflow in these docs as
+> shipped until its stage in `docs/development-roadmap.md` is
+> marked complete and verified.
 
 ## Development setup
 
@@ -109,9 +113,65 @@ curl -X POST http://localhost:8000/api/v1/guest/help-calls \
 Unknown token → `401 {"error":{"code":"invalid_table_token",…}}`;
 revoked/expired token → `410 {"error":{"code":"session_expired",…}}`;
 another session's order → `404` (not `403`).
-Tests: `pytest -q` in `backend/` (SQLite in-memory; 67 passed / 1 skipped
-after Stage 4) — plus a real-Postgres check via `alembic upgrade head`
+Tests: `pytest -q` in `backend/` (SQLite in-memory; 87 passed / 1 skipped
+after Stage 5) — plus a real-Postgres check via `alembic upgrade head`
 against a local PostgreSQL before claiming the migration works.
+
+### Waiter / Staff dashboard (Stage 5 — development access only)
+
+> **The staff board is development-access only until staff auth lands.**
+> Staff endpoints require a shared dev key, not a staff login. There is
+> NO `/login` implementation, no users table, no JWT issuance in Stage 5.
+> In production they return `503 {"error":{"code":
+> "staff_auth_not_configured",…}}` and the WebSocket closes with
+> code 4403. Do not expose the staff board publicly on the dev key.
+> A guest table token does NOT grant staff access; the kitchen dev
+> key does NOT grant staff access (and vice versa).
+
+```bash
+# .env (backend) and frontend/.env must carry the SAME key:
+STAFF_DEV_KEY=dev-staff-only          # backend
+VITE_STAFF_DEV_KEY=dev-staff-only     # frontend
+```
+
+```bash
+# Floor grid (tables, number order, with live session/order/help-call flags)
+curl -H "X-Staff-Dev-Key: dev-staff-only" \
+  http://localhost:8000/api/v1/staff/tables
+# Active orders, oldest first (ready orders are shown first in the UI)
+curl -H "X-Staff-Dev-Key: dev-staff-only" \
+  http://localhost:8000/api/v1/staff/orders
+# Serve a ready order — ready -> served ONLY, anything else -> 409.
+# Serving does NOT close the session or change the table status.
+curl -X PATCH -H "X-Staff-Dev-Key: dev-staff-only" \
+  http://localhost:8000/api/v1/staff/orders/<ORDER_ID>/serve
+# Help calls: list unresolved, acknowledge (open -> acknowledged),
+# resolve (acknowledged -> resolved). Resolving an open call -> 409.
+curl -H "X-Staff-Dev-Key: dev-staff-only" \
+  http://localhost:8000/api/v1/staff/help-calls
+curl -X PATCH -H "X-Staff-Dev-Key: dev-staff-only" \
+  http://localhost:8000/api/v1/staff/help-calls/<CALL_ID>/acknowledge
+curl -X PATCH -H "X-Staff-Dev-Key: dev-staff-only" \
+  http://localhost:8000/api/v1/staff/help-calls/<CALL_ID>/resolve
+# restaurant_id is required unless exactly one restaurant exists.
+```
+
+Open the board at http://localhost:5173/staff (Vite proxies `/api`
+and `/ws` to the backend). The board shows the floor grid (status
+colours, READY / NEEDS HELP badges), table detail on click, active
+orders with "Ready to serve" first, and the help-call queue. A new
+guest order or help call appears without refresh via the WebSocket
+(`order.created` / `order.status_changed` / `help_call.opened` /
+`help_call.acknowledged` / `help_call.resolved`; REST re-fetch is
+the source of truth, the socket only announces change). Serving
+asks for inline confirmation first; the order moves only after the
+server confirms. If the socket drops, the board keeps the last REST
+snapshot with a reconnecting banner. Demo mode (clearly labelled
+sample floor/orders/calls, actions disabled, no backend needed):
+http://localhost:5173/staff?demo=1. Screenshots:
+`docs/stage5-screenshots/`. NOT in Stage 5: bill requests, session
+close, table-status transitions, staff assignments, payroll —
+see `docs/development-roadmap.md` Stage 5 report.
 
 ### Kitchen Display System (Stage 4 — development access only)
 

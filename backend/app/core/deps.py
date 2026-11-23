@@ -23,7 +23,12 @@ from app.core.errors import ApiError
 from app.db.session import get_db
 from app.services.table_service import GuestContext, resolve_guest_context
 
-__all__ = ["get_db", "get_guest_context", "require_kitchen_dev_access"]
+__all__ = [
+    "get_db",
+    "get_guest_context",
+    "require_kitchen_dev_access",
+    "require_staff_dev_access",
+]
 
 
 def get_guest_context(
@@ -67,4 +72,38 @@ def require_kitchen_dev_access(
     if not secrets.compare_digest(x_kitchen_dev_key, settings.kitchen_dev_key):
         raise ApiError(
             403, "forbidden", "The kitchen dev key is not valid for this server."
+        )
+
+
+def require_staff_dev_access(
+    x_staff_dev_key: str | None = Header(default=None, alias="X-Staff-Dev-Key"),
+) -> None:
+    """Dev-only staff gate (Stage 5) — mirrors the kitchen gate, with
+    a SEPARATE key: a kitchen key does not grant staff access (and
+    vice versa), and a guest table token grants nothing here.
+
+    Production -> 503: staff access requires staff authentication,
+    which does not exist yet — the staff dashboard is
+    development-access only until then. Otherwise the
+    ``X-Staff-Dev-Key`` header must equal the configured
+    ``STAFF_DEV_KEY`` (missing -> 401, wrong -> 403). The key is
+    compared in constant time and never logged. This is NOT secure
+    authentication; it only keeps a dev deployment from serving
+    staff operations to anyone who happens to find the URL.
+    """
+    if settings.is_production:
+        raise ApiError(
+            503,
+            "staff_auth_not_configured",
+            "Staff access requires staff authentication, which is not "
+            "configured yet. The waiter dashboard is development-access "
+            "only until staff auth lands.",
+        )
+    if not x_staff_dev_key:
+        raise ApiError(
+            401, "unauthenticated", "X-Staff-Dev-Key header is required."
+        )
+    if not secrets.compare_digest(x_staff_dev_key, settings.staff_dev_key):
+        raise ApiError(
+            403, "forbidden", "The staff dev key is not valid for this server."
         )

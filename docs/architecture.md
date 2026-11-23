@@ -292,6 +292,24 @@ closed immediately.
 > `kitchen-orders` TanStack Query key on (re)connect and on every
 > event and re-fetches via REST; WS data is never applied as state
 > directly. Reconnect is exponential backoff 1s/2s/4s… max 30s.
+>
+> **Stage 5 status (23 Nov 2026):** a second endpoint reuses the
+> SAME manager — `GET /ws/staff` (staff dev-key auth, see
+> `api-plan.md` § 9.1). The manager is keyed by channel
+> (`kitchen:{restaurant_id}` / `staff:{restaurant_id}`), not by
+> role: a kitchen socket and a staff socket for the same
+> restaurant are separate channel memberships, and a broadcast to
+> one never reaches the other. Staff broadcasts, all at router
+> level after commit: `order.status_changed` on serve (the staff
+> client ALSO receives kitchen transitions, because the kitchen
+> router broadcasts to the staff channel too — both channels get
+> `order.created` on guest placement); `help_call.opened` from
+> the guest help-call router after creation commits;
+> `help_call.acknowledged` / `help_call.resolved` from the staff
+> routers after commit. The frontend (`useStaffSocket`) mirrors
+> `useKitchenSocket`: it invalidates the `staff-tables`,
+> `staff-orders`, `staff-help-calls` and `staff-table-detail`
+> TanStack Query keys on (re)connect and on every event.
 
 **Event envelope (all events):**
 
@@ -318,6 +336,8 @@ authority.
 | `restaurant:{id}` | Staff, kitchen, owner of that restaurant | `order.*`, `ticket.*`, `table.*`, `help_call.*`, `bill.*`, `payment.*` |
 | `table-session:{session_id}` | The guest session (+ staff viewing that table) | `order.status_changed`, `order.item_ready`, `bill.*`, `help_call.*` for that session |
 | `kitchen:{restaurant_id}:{station}` | KDS filtered view (subscription filter, not a separate truth) | `ticket.*` for that station |
+| `kitchen:{restaurant_id}` | KDS | **Stage 4, LIVE:** `order.created`, `order.status_changed` |
+| `staff:{restaurant_id}` | Staff board | **Stage 5, LIVE:** `order.created`, `order.status_changed` (incl. kitchen transitions), `help_call.opened`, `help_call.acknowledged`, `help_call.resolved` |
 
 Authorisation is checked at subscription time, per channel, against the
 caller's restaurant and (for guests) table session. A guest socket cannot
