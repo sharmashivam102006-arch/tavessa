@@ -14,11 +14,18 @@ The first demonstration restaurant is **Zaika**. The architecture is SaaS-ready:
 every tenant-scoped record belongs to a restaurant, so a second restaurant can be
 added without a schema redesign.
 
-> **Status: Stage 1 complete — 23 Nov 2026.** Blueprint + project foundation
-> are done and verified (see "Development setup" below). No business features
-> exist yet — guest/staff/kitchen/admin are route shells only. Do not treat
-> any endpoint, screen, or workflow in these docs as shipped until its stage
-> in `docs/development-roadmap.md` is marked complete and verified.
+> **Status: Stage 2 complete (frontend) — 23 Nov 2026.** Blueprint + project foundation
+> are done and verified (see "Development setup" below). Stage 2 built the
+> guest interface & digital menu for Zaika as a frontend against the API
+> contract in `docs/api-plan.md`, using clearly-marked sample menu data —
+> no guest/menu/order/help/bill endpoints exist on the backend yet, so every
+> write action honestly reports "not yet connected" and no order, help
+> request or payment is faked. The backend half of Stage 2 (tables, menu,
+> orders) is deferred to Stage 3, per the Stage 2 instruction. No business
+> features exist yet beyond the guest UI — staff/kitchen/admin are route
+> shells only. Do not treat any endpoint, screen, or workflow in these docs
+> as shipped until its stage in `docs/development-roadmap.md` is marked
+> complete and verified.
 
 ## Development setup
 

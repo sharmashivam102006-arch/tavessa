@@ -27,7 +27,7 @@
 |---|---|---|
 | 0 | Blueprint (this document set) | **Done — 23 Nov 2026** |
 | 1 | Project foundation & architecture | **Done — 23 Nov 2026, verified (see Stage 1 report below)** |
-| 2 | Guest interface & QR ordering | Not started |
+| 2 | Guest interface & QR ordering | **Done (frontend) — 23 Nov 2026, verified (see Stage 2 report below).** Guest UI built against the api-plan.md contract with labelled Zaika sample data; backend half of Stage 2 (tables/menu/orders endpoints) deferred to Stage 3 per the Stage 2 instruction. |
 | 3 | Backend APIs & database integration | Not started |
 | 4 | Kitchen Display System | Not started |
 | 5 | Waiter / Staff dashboard | Not started |
@@ -109,6 +109,50 @@ with a health check. Nothing else is claimed.
 ---
 
 ## Stage 2 — Guest interface and QR ordering
+
+**Status: Done (frontend) — 23 Nov 2026 (verified).** Guest interface
+built in `frontend/src/features/guest/` against the contracts in
+`api-plan.md` (§§ 3, 4, 5, 7, 10): menu browsing (search, veg-only,
+sticky category bar with scroll-spy), item detail sheet (variants,
+add-ons, instructions, live price), per-table-token persisted cart
+(Zustand + localStorage), order review with a generated idempotency
+key, confirmation (renders only from a real 201 response), order
+tracking timeline (Placed → Accepted → Cooking → Ready → Served, plus
+Cancelled), help-call UI, bill view with equal/custom splits
+(remainder rule) and cash-only Pay by Cash request flow. Shared API
+types extended in `src/shared/api/types.ts`; client extended with
+per-request headers + `createIdempotencyKey()`; no second client.
+Zaika sample menu: 6 categories × 4 items (24 total, 2 sold out,
+several popular), clearly marked as demo data. Honesty rules enforced:
+the backend still exposes only `GET /api/v1/health`, so every write
+(order/help/bill) attempts the real endpoint and, on 404, shows the
+not-connected state naming the endpoint and the stage that adds it,
+keeping the cart; tax shows no invented line (D1 undecided); totals
+are labelled ESTIMATED; the table badge reads "Table — not verified
+yet" until a real session response verifies it; no fake orders,
+confirmations, help requests, payments or WebSocket progress.
+Verified: `npm run build` clean, Vitest **32 passed** (pricing, split,
+cart, session-error mapper), backend `pytest` 5 passed / 1 skipped
+(backend untouched — `git status` shows frontend-only changes), Vite
+dev server curl checks all 200 (`/`, `/t/demo`, `/t/demo/cart`,
+`/t/demo/bill`, `/t/demo/orders`, `/t/demo/help`, `/t/demo/review`,
+`/staff`), `/api/v1/health` proxied ok, guest endpoints confirmed
+404 (session/menu), live browser run: added Half butter chicken +
+extra gravy and paneer tikka (₹299 + ₹249 = ₹548 estimated, correct),
+Place Order returned the honest not-connected state with the
+idempotency key. 13 real screenshots in
+`docs/stage2-screenshots/`. Known sandbox limits: Docker not
+installed here (Compose still unverified); Unsplash food photos do
+not load in the sandbox's headless Chromium (egress proxy breaks
+non-loopback TLS for the browser — curl fetches them fine), so
+screenshots show the designed FoodImage placeholder fallback; the
+401 invalid-token / 410 expired branches are unit-tested
+(mapSessionError) but not live-verifiable until the backend returns
+those codes in Stage 3. The backend half of this stage (tables, menu,
+orders endpoints + seed) is deferred to Stage 3, per the Stage 2
+instruction — the roadmap's Stage 2 acceptance criteria that need
+the backend (order placement, idempotency, 422s, tracking from DB)
+are therefore still open and move to Stage 3.
 
 **Goal:** a guest can scan a table QR code, browse Zaika's menu, build a cart,
 and place an order that the backend validates and stores.
