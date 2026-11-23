@@ -30,6 +30,7 @@
 | 2 | Guest interface & QR ordering | **Done (frontend) — 23 Nov 2026, verified (see Stage 2 report below).** Guest UI built against the api-plan.md contract with labelled Zaika sample data; backend half of Stage 2 (tables/menu/orders endpoints) deferred to Stage 3 per the Stage 2 instruction. |
 | 3 | Backend APIs & database integration | **Done (guest scope) — 23 Nov 2026, verified (see Stage 3 report below).** Guest backend only: models/migrations/seed, QR sessions, menu, orders, help calls. The roadmap's original Stage 3 scope (auth, staff/kitchen/admin endpoints, bills, reviews, audit) was narrowed by the Stage 3 instruction to the guest domain — the rest stays open and moves to Stages 4–7. |
 | 3.1 | Concurrent idempotency hardening | **Done — 23 Nov 2026, verified.** Session-scoped atomic claim-before-create; genuine 8-thread concurrency test on real Postgres (old code created 8 orders, new code creates 1). See Stage 3.1 report below. |
+| 3.2 | Idempotency crash-recovery hardening | **Done — 23 Nov 2026, verified.** Single-transaction claim+order+response; no separately committed claim for a crash to orphan. See Stage 3.2 report below. |
 | 4 | Kitchen Display System | Not started |
 | 5 | Waiter / Staff dashboard | Not started |
 | 6 | Billing & cash payments | Not started |
@@ -311,6 +312,47 @@ orphan-row deletion, constraint swap, downgrade −1, re-upgrade.
 Full suite: backend pytest 40 passed / 1 skipped, frontend Vitest
 32 passed, `npm run build` clean. No API or frontend contract
 changed.
+
+---
+
+## Stage 3.2 — Idempotency crash-recovery hardening
+
+**Status: Done — 23 Nov 2026 (verified).** Root cause: Stage 3.1
+used three separate transactions (claim commit → order commit →
+response-fill commit), so a process crash after the first left a
+committed pending claim with no order and no response — ordinary
+exception handling cannot cover process termination. Fixed by
+collapsing all three into ONE transaction (`api-plan.md` § 10,
+`database-design.md` § 3.26): claim INSERT (flush, no commit) +
+validation + order creation + response fill, one commit. Any
+failure rolls everything back. Concurrency is PostgreSQL's
+unique-index speculative insertion: a competing INSERT blocks
+until the owner's transaction commits (unique violation → read the
+committed row and replay) or aborts — a crash aborts it when the
+connection drops, so the waiter proceeds as owner. No polling, no
+lease, no fencing. The wait is bounded by `SET LOCAL lock_timeout
+= '10s'` (PostgreSQL only), mapped to `409
+idempotency_in_progress`. Pre-3.2 pending rows are handled in the
+conflict path only (rebuild from `order_id`, or reclaim a stale
+row older than 60 s). No schema migration was needed — the 3.1
+constraint already covers the scope.
+
+**Verification:** `tests/test_orders_concurrency.py` extended on
+the same real-PostgreSQL pgserver fixture (9 tests): the 3 existing
+concurrency tests pass unchanged (8 simultaneous same-key requests
+→ exactly 1 order, 1 owner + 7 replays; different body → 422;
+cross-session independence); new tests — failed placement leaves
+no claim row and the same key succeeds with a corrected body;
+abandoned claim without an order recovers as owner (1 order);
+abandoned claim with an order replays it verbatim (0 new orders);
+two competing recoveries of one stale claim create exactly 1
+order; a held uncommitted claim transaction makes a competing POST
+genuinely block for 2 s with no order, then complete as owner
+after the holder rolls back (simulated crash); a 200 ms patched
+lock timeout returns `409 idempotency_in_progress` promptly.
+Full suite: backend pytest 46 passed / 1 skipped (3 consecutive
+runs, 0 warnings), frontend Vitest 32 passed, `npm run build`
+clean. No API or frontend contract changed.
 
 ---
 

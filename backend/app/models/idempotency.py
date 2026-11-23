@@ -7,12 +7,18 @@ session's key, and the same key string in a different session is an
 independent claim. The stored response is returned verbatim on a
 replay of the same key + same canonical body. Keys expire after 24h.
 
-Claim lifecycle (Stage 3.1): a row is inserted FIRST with
-response_status/response_body/order_id NULL (the atomic claim —
-the DB unique constraint serialises concurrent claimants); the
-order-creation transaction then sets order_id, and the stored
-response is filled in afterwards. A claim whose order creation
-fails is deleted, so a corrected retry can proceed.
+Claim lifecycle (Stage 3.2): claim + order + stored response are
+created in ONE transaction — the claim row is inserted (flush, no
+commit), the order is created with order_id set on the claim, the
+stored response is filled in, and a single commit lands all three.
+Any failure rolls the whole transaction back, so in steady state a
+row is NEVER visible with response NULL: a committed row is always
+a completed claim. Rows with response NULL can only be leftovers
+from Stage 3.1's three-transaction design (claim committed
+separately); the conflict path in order_service.py reclaims them
+(rebuild from order_id, or delete a stale row older than 60 s).
+A claim whose placement fails leaves no row at all, so a corrected
+retry with the same key proceeds.
 """
 import uuid
 from datetime import datetime

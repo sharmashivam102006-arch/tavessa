@@ -620,15 +620,19 @@ or reuse another session's key, and the same key string in a
 different session is an independent claim. Index: `expires_at` (for
 cleanup).
 
-Claim lifecycle (Stage 3.1, api-plan.md § 10): a row is inserted
-FIRST with `response_status` / `response_body` / `order_id` NULL —
-that insert's commit is the atomic claim, and the DB unique
-constraint serialises concurrent claimants. The order-creation
-transaction then sets `order_id`; the stored response is filled in
-afterwards. A claim whose order creation fails is deleted, so a
-corrected retry can proceed. A competing request polls the row for
-up to 10 s; if the owner committed the order but has not filled the
-response yet, the response is rebuilt from the order via `order_id`.
+Claim lifecycle (Stage 3.2, api-plan.md § 10): claim + order +
+stored response are created in ONE transaction — the claim row is
+inserted (flush, no commit), the order is created with `order_id`
+set on the claim, the stored response is filled in, and a single
+commit lands all three. Any failure rolls the whole transaction
+back. In steady state a committed row ALWAYS has its response
+filled; a row is never visible with `response_body` NULL. Such
+rows can only be leftovers from Stage 3.1's three-transaction
+design (claim committed separately) and are handled in the
+conflict path: rebuild from `order_id` when set, or delete the row
+and retry the claim when it is older than 60 s (expired rows the
+same). A failed placement leaves no row at all, so a corrected
+retry with the same key proceeds.
 Only order placement uses this table in v1; bill generation and payment
 confirmation rely on status guards + row locks instead (they are not safely
 replayable by key alone — see `api-plan.md` § 7).
