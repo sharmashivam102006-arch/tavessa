@@ -289,3 +289,69 @@ export interface ReviewRequest {
   rating: number; // 1–5
   comment?: string;
 }
+
+/* ------------------------------------------------------------------ */
+/* Kitchen (api-plan.md § 6 as built in Stage 4)                       */
+/* ------------------------------------------------------------------ */
+
+/** A restaurant the KDS can pick (GET /kitchen/restaurants). */
+export interface KitchenRestaurant {
+  id: string;
+  name: string;
+}
+
+/** An order as the KDS sees it: the guest Order plus the table
+ * number (ticket header) and server-computed elapsed seconds. */
+export interface KitchenOrder extends Order {
+  tableNumber: number;
+  elapsedSeconds: number;
+}
+
+/** Column-name status filter values for GET /kitchen/orders:
+ * `queued` -> placed/accepted, `preparing` -> preparing,
+ * `ready` -> ready. */
+export type KitchenStatusFilter = "queued" | "preparing" | "ready";
+
+/** The three board columns. `placed`/`accepted` both land in New;
+ * terminal states (served/completed/cancelled) are not on the board. */
+export type KitchenColumnId = "new" | "preparing" | "ready";
+
+export const KITCHEN_COLUMNS: { id: KitchenColumnId; title: string }[] = [
+  { id: "new", title: "New" },
+  { id: "preparing", title: "Preparing" },
+  { id: "ready", title: "Ready" },
+];
+
+/** WebSocket event envelope (api-plan.md § 9.3). `data` carries
+ * identifiers + a summary only — receivers re-fetch via REST. */
+export interface KitchenEvent {
+  type: "order.created" | "order.status_changed" | string;
+  restaurant_id: string;
+  table_id: string | null;
+  data: {
+    order_id: string;
+    order_number: string;
+    status: string;
+    table_number: number;
+  };
+  version: number;
+  occurred_at: string;
+}
+
+export type KitchenConnectionStatus =
+  | "live"
+  | "connecting"
+  | "reconnecting"
+  | "offline";
+
+export interface PaginationInfo {
+  page: number;
+  per_page: number;
+  total: number;
+  total_pages: number;
+}
+
+export interface KitchenOrderListResponse {
+  data: KitchenOrder[];
+  pagination: PaginationInfo;
+}

@@ -703,6 +703,20 @@ placed → cancelled          (guest, before accepted — per D8)
 accepted/preparing → cancelled   (staff/kitchen only, with reason)
 ```
 
+> **Stage 4 as implemented (23 Nov 2026):** the kitchen moves an
+> order order-level only — placed/accepted → preparing →
+> ready — via `PATCH /kitchen/orders/:id/status`. The transition
+> is enforced in `kitchen_service.transition_order` against the
+> current DB state under a row lock (`SELECT … FOR UPDATE`);
+> anything else → 409 with current + requested status. The order
+> and its non-cancelled items move together in ONE transaction
+> (items queued → preparing on →preparing, →ready on →ready;
+> `accepted_at` set if null on →preparing, `ready_at` set on
+> →ready; `version` += 1). There is no per-item transition
+> endpoint and no separate ticket status to derive — see
+> `kitchen_tickets` below. `served`/`completed` are staff-side
+> steps (Stage 5), not kitchen steps.
+
 `completed` is set when the bill is paid (or when staff explicitly complete a
 served order with no bill — Stage 3 detail). Order status is **derived**
 from item statuses where possible: `ready` when all non-cancelled items are
@@ -716,10 +730,22 @@ queued → preparing → ready → served
 queued/preparing → cancelled   (authorised roles only, with reason)
 ```
 
+> **Stage 4 as implemented:** items move only as a consequence of
+> their order's transition (see Orders above) or of a guest cancel
+> (placed → cancelled cancels the items too). No endpoint moves a
+> single item on its own.
+
 ### Kitchen tickets — `kitchen_tickets.status`
 
 Derived from items (see § 3.15): `queued → preparing → ready → served`,
 plus `cancelled` when all its items are cancelled.
+
+> **Stage 4 as implemented: this table does NOT exist and this
+> machine does not run.** A "ticket" IS an order + its item
+> snapshots (`GET /kitchen/orders` is the queue); the order-level
+> machine above is the only kitchen machine. Station
+> grouping/filtering is deferred — `menu_items.station` (TEXT)
+> already records each item's station for later use.
 
 ### Bills — `bills.status`
 

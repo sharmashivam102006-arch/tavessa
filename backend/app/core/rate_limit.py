@@ -12,3 +12,6 @@ limiter = Limiter(key_func=get_remote_address, default_limits=[])
 
 SESSION_OPEN_LIMIT = "120/minute"
 ORDER_PLACE_LIMIT = "60/minute"
+# Kitchen status transitions (Stage 4): same generous cap as order
+# placement — it blunts abuse, it does not police the kitchen.
+KITCHEN_PATCH_LIMIT = "60/minute"

@@ -12,6 +12,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from app.api.v1 import api_router
+from app.api.v1.websocket import router as websocket_router
 from app.core.config import settings
 from app.core.errors import error_body, register_error_handlers
 from app.core.logging import configure_logging
@@ -50,6 +51,9 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(api_router)
+    # WebSocket routes mount WITHOUT the /api/v1 prefix:
+    # GET /ws/kitchen (api-plan.md § 9).
+    app.include_router(websocket_router)
 
     @app.get("/", tags=["health"])
     def root():

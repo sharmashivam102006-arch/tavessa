@@ -13,6 +13,7 @@ import { OrderConfirmationPage } from "@/features/guest/OrderConfirmationPage";
 import { OrderReviewPage } from "@/features/guest/OrderReviewPage";
 import { OrdersPage } from "@/features/guest/OrdersPage";
 import { OrderTrackingPage } from "@/features/guest/OrderTrackingPage";
+import { KitchenLayout } from "@/features/kitchen/KitchenLayout";
 import { KitchenPage } from "@/features/kitchen/KitchenPage";
 import { StaffPage } from "@/features/staff/StaffPage";
 
@@ -22,7 +23,8 @@ import { StaffPage } from "@/features/staff/StaffPage";
  * GuestLayout, so guests never see the dev backend-status pill.
  * The demo token "demo" opens the labelled Zaika sample menu
  * (Table 5 preview) — it is never presented as a verified session.
- * Staff/kitchen/admin keep their Stage 1 shells, unchanged. */
+ * /kitchen likewise sits OUTSIDE AppLayout in its own full-width
+ * KitchenLayout (Stage 4). Staff/admin keep their Stage 1 shells. */
 export const router = createBrowserRouter([
   {
     element: <AppLayout />,
@@ -39,16 +41,6 @@ export const router = createBrowserRouter([
         children: [{ index: true, element: <StaffPage /> }],
       },
       {
-        path: "/kitchen",
-        element: (
-          <RoleLayout
-            title="Kitchen Display"
-            hint="Live tickets by station."
-          />
-        ),
-        children: [{ index: true, element: <KitchenPage /> }],
-      },
-      {
         path: "/admin",
         element: (
           <RoleLayout
@@ -60,6 +52,14 @@ export const router = createBrowserRouter([
       },
       { path: "/login", element: <RoleLayout title="Sign in" hint="Staff and owner sign-in arrives in Stage 3." /> },
     ],
+  },
+  {
+    // The KDS is full-width: it sits OUTSIDE AppLayout in its own
+    // KitchenLayout (like the guest route's GuestLayout) — AppLayout's
+    // max-w-5xl is too narrow for a wall screen.
+    path: "/kitchen",
+    element: <KitchenLayout />,
+    children: [{ index: true, element: <KitchenPage /> }],
   },
   {
     path: "/t/:tableToken",

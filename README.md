@@ -14,7 +14,7 @@ The first demonstration restaurant is **Zaika**. The architecture is SaaS-ready:
 every tenant-scoped record belongs to a restaurant, so a second restaurant can be
 added without a schema redesign.
 
-> **Status: Stage 3 complete (guest backend) — 23 Nov 2026.** Blueprint + project foundation
+> **Status: Stage 4 complete (Kitchen Display System) — 23 Nov 2026.** Blueprint + project foundation
 > are done and verified (see "Development setup" below). Stage 2 built the
 > guest interface & digital menu for Zaika as a frontend against the API
 > contract in `docs/api-plan.md`, using clearly-marked sample menu data.
@@ -22,9 +22,12 @@ added without a schema redesign.
 > Zaika seed (6 categories, 24 items), QR-token sessions, menu, orders
 > (server-priced, idempotent), help calls — all verified live against a
 > real PostgreSQL. The sample menu is now used only for the `/t/demo`
-> preview; real table tokens use the real API. Staff/kitchen/admin are
+> preview; real table tokens use the real API. Stage 4 added the Kitchen
+> Display System: order-level kitchen API, `order.created` /
+> `order.status_changed` WebSocket events, and the `/kitchen` board
+> (New / Preparing / Ready, ticking elapsed times). Staff/admin are
 > still route shells only, and there are no bills, payments, reviews,
-> WebSocket, or staff login yet (Stages 4–8). Do not treat any endpoint,
+> or staff login yet (Stages 5–8). Do not treat any endpoint,
 > screen, or workflow in these docs as shipped until its stage in
 > `docs/development-roadmap.md` is marked complete and verified.
 
@@ -106,9 +109,47 @@ curl -X POST http://localhost:8000/api/v1/guest/help-calls \
 Unknown token → `401 {"error":{"code":"invalid_table_token",…}}`;
 revoked/expired token → `410 {"error":{"code":"session_expired",…}}`;
 another session's order → `404` (not `403`).
-Tests: `pytest -q` in `backend/` (SQLite in-memory; 37 passed / 1 skipped
-in Stage 3) — plus a real-Postgres check via `alembic upgrade head`
+Tests: `pytest -q` in `backend/` (SQLite in-memory; 67 passed / 1 skipped
+after Stage 4) — plus a real-Postgres check via `alembic upgrade head`
 against a local PostgreSQL before claiming the migration works.
+
+### Kitchen Display System (Stage 4 — development access only)
+
+> **The KDS is development-access only until staff auth lands.**
+> Kitchen endpoints require a shared dev key, not a staff login.
+> In production they return `503 {"error":{"code":
+> "kitchen_auth_not_configured",…}}` and the WebSocket closes with
+> code 4403. Do not expose the KDS publicly on the dev key.
+
+```bash
+# .env (backend) and frontend/.env must carry the SAME key:
+KITCHEN_DEV_KEY=dev-kitchen-only          # backend
+VITE_KITCHEN_DEV_KEY=dev-kitchen-only     # frontend
+```
+
+```bash
+# Kitchen queue (active orders, oldest first; status=queued|preparing|ready)
+curl -H "X-Kitchen-Dev-Key: dev-kitchen-only" \
+  http://localhost:8000/api/v1/kitchen/orders
+# Move an order one step: placed/accepted -> preparing -> ready
+curl -X PATCH -H "X-Kitchen-Dev-Key: dev-kitchen-only" \
+  -H "Content-Type: application/json" -d '{"status":"preparing"}' \
+  http://localhost:8000/api/v1/kitchen/orders/<ORDER_ID>/status
+# Any other transition -> 409; any other status value -> 422.
+# restaurant_id is required unless exactly one restaurant exists.
+```
+
+Open the board at http://localhost:5173/kitchen (Vite proxies `/api`
+and `/ws` to the backend — the `/ws` entry needs `ws: true` or the
+socket never connects). The board shows New / Preparing / Ready
+columns with ticking elapsed times; a new guest order appears
+without refresh via the WebSocket (`order.created` /
+`order.status_changed` events; REST re-fetch is the source of
+truth, the socket only announces change). If the socket drops, the
+board keeps the last REST snapshot with a reconnecting banner.
+Demo mode (clearly labelled sample tickets, no backend needed):
+http://localhost:5173/kitchen?demo=1. Screenshots:
+`docs/stage4-screenshots/`.
 
 ### Frontend
 

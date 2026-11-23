@@ -180,9 +180,9 @@ per-item details (`{ "field": "items[1].variant_id", "code": "invalid_variant" }
 | `GET /orders/:id` | JWT or guest (own session) | Full order with items, ticket statuses, bill link if any. Guest: only if the order belongs to their session, else `403`. |
 | `GET /guest/orders` | `X-Table-Token` | Orders for this session (active + recent). **Stage 3: implemented** — `{ "data": […], "pagination": { "page", "per_page", "total", "total_pages" } }`, `placed_at` desc. |
 | `GET /guest/orders/:id` | `X-Table-Token` | One order of this session, for live tracking. **Stage 3: implemented** — another session's order → `404`. |
-| `PATCH /orders/:id/status` | JWT (kitchen/owner; waiter for `served` only) | Body `{ "status": "accepted" \| "preparing" \| "ready" \| "served" \| "completed" \| "cancelled", "reason": "…" }`. Transition validated against the machine (`database-design.md` § 6); illegal → `409`. Sets the matching `*_at` timestamp. **Not in Stage 3** (Stage 4). |
+| `PATCH /orders/:id/status` | JWT (kitchen/owner; waiter for `served` only) | Body `{ "status": "accepted" \| "preparing" \| "ready" \| "served" \| "completed" \| "cancelled", "reason": "…" }`. Transition validated against the machine (`database-design.md` § 6); illegal → `409`. Sets the matching `*_at` timestamp. **Not in Stage 3; not in Stage 4 either** — Stage 4 built the kitchen transition as `PATCH /kitchen/orders/:id/status` instead (see § 6: order-level, preparing/ready only, dev-key gated). The staff-wide endpoint lands with staff auth (Stage 5). |
 | `POST /orders/:id/cancel` | JWT or guest (own session, before `accepted` — per D8) | Body `{ "reason": "…" }`. Cancels the order and its non-served items; recomputes totals; if a bill already exists, the bill must be regenerated (Stage 6 rule). **Stage 3: guest cancel implemented — only while `placed` (D8 still open), else `409`; cancels its items too, same transaction.** |
-| `PATCH /orders/:orderId/items/:itemId/status` | JWT (kitchen/owner; waiter for `served` only) | Body `{ "status": "preparing" \| "ready" \| "served" \| "cancelled", "reason": "…" }`. Item transition; order + ticket statuses recomputed in the same transaction; `order.item_ready` / `order.ready` events published after commit. |
+| `PATCH /orders/:orderId/items/:itemId/status` | JWT (kitchen/owner; waiter for `served` only) | **Not built — superseded by the Stage 4 order-level decision** (api-plan.md § 6, deviation 1): there is no per-item status endpoint; items move with their order. |
 
 **Status-transition rule:** the backend is the only authority. A request to
 move `queued → served` directly is rejected (`409`) — the item must pass
@@ -207,16 +207,55 @@ the response, computed server-side).
 
 ## 6. Kitchen (KDS)
 
+> **Stage 4 status (23 Nov 2026): implemented and verified — as
+> built below, which OVERRIDES the blueprint's ticket/station
+> design. Recorded deviations:**
+> 1. **Workflow is ORDER-LEVEL, not per-item.** There is no
+>    `PATCH /orders/:orderId/items/:itemId/status` and no
+>    `PATCH /kitchen/tickets/:id/status`. `PATCH
+>    /kitchen/orders/:id/status` moves the order AND its
+>    non-cancelled items together in one transaction
+>    (placed→preparing: items queued→preparing, `accepted_at` set
+>    if null; preparing→ready: items →ready, `ready_at` set).
+> 2. **NO `kitchen_tickets` table, NO stations.** A "ticket" IS an
+>    order + its item snapshots. Station grouping/filtering is
+>    deferred — menu items already carry a `station` TEXT field
+>    for later use.
+> 3. **WebSockets arrive NOW for the kitchen** (not Stage 8):
+>    `GET /ws/kitchen`, events `order.created` and
+>    `order.status_changed` (see § 9). Guest tracking still
+>    refetches via REST.
+> 4. **Statuses on the wire stay LOWERCASE.** Column mapping:
+>    New = placed (+accepted if ever present), Preparing =
+>    preparing, Ready = ready. Terminal states
+>    (served/completed/cancelled) are NOT in the active queue.
+>
+> **Auth is DEV-ONLY in Stage 4:** kitchen REST endpoints require
+> header `X-Kitchen-Dev-Key` equal to the backend `KITCHEN_DEV_KEY`
+> (missing → 401, wrong → 403); the WebSocket takes the same key as
+> query param `?dev_key=…` (never logged). In production the
+> kitchen routes return **503 `kitchen_auth_not_configured`** (WS:
+> close 4403) until staff auth lands. The KDS is
+> development-access only until then. Guest token security is
+> untouched.
+>
+> **`restaurant_id` rule:** required on kitchen REST endpoints
+> EXCEPT when omitted and exactly one restaurant exists — then
+> that restaurant is used. Omitted with 0 or 2+ restaurants → 422
+> requiring `restaurant_id`. Unknown restaurant → 404.
+
 | Method & path | Auth | Notes |
 |---|---|---|
-| `GET /kitchen/tickets` | JWT (kitchen/owner) | Active queue. Filters: `station_id`, `status`. Sorted by `created_at` (oldest first — the kitchen works the oldest ticket first). Each ticket includes its order items for that station, table number, elapsed seconds, and `sla_breached` flag. |
-| `GET /kitchen/tickets/:id` | JWT (kitchen/owner) | One ticket with items. |
-| `PATCH /kitchen/tickets/:id/status` | JWT (kitchen/owner) | `{ "status": "preparing" \| "ready" \| "served" }`. Derived-status guard: a ticket cannot be set `ready` while any non-cancelled item is still `queued`/`preparing` — the service either rejects (`409`) or, preferably, the ticket status is **derived only** and this endpoint is not used to set it directly. **Decision for Stage 4:** ticket status is derived from items; this endpoint exists only for `preparing` (accept) as an explicit kitchen acknowledgement. Record the final choice in Stage 4. |
-| `GET /kitchen/stations` | JWT (kitchen/owner) | Stations for the restaurant (id, name, active ticket counts). |
+| `GET /kitchen/orders?restaurant_id=&status=&page=&per_page=` | Dev key | Active queue, oldest first (`placed_at` asc). `status` uses column names: `queued` → placed/accepted, `preparing` → preparing, `ready` → ready; unknown value → 422. No filter returns all non-terminal orders (placed/accepted/preparing/ready). Each order carries `tableNumber`, server-computed `elapsedSeconds`, and full item snapshots. |
+| `GET /kitchen/orders/:id?restaurant_id=` | Dev key | One order. Unknown id or wrong restaurant → 404. |
+| `PATCH /kitchen/orders/:id/status?restaurant_id=` | Dev key (rate-limited, 60/min) | Body `{ "status": "preparing" \| "ready" }` — any other value → 422. Allowed: placed/accepted → preparing, preparing → ready; anything else → 409 `conflict` with `current_status` + `requested_status` in `error.details`, state unchanged. Row-locks the order (`SELECT … FOR UPDATE`) so concurrent PATCHes serialise; order + items + `version` += 1 in ONE transaction. Broadcasts `order.status_changed` after commit. |
+| `GET /kitchen/restaurants` | Dev key | Dev-only picker (id + name) so the KDS can pick the restaurant without hardcoding one; the frontend defaults to the only restaurant when there is one. |
+| `GET /ws/kitchen?restaurant_id=&dev_key=` | Dev key (query) | Kitchen WebSocket — see § 9. Bad/missing key → close 4401, unknown restaurant → 4404. |
 
-The KDS screen polls nothing in normal operation — it subscribes to the
-WebSocket kitchen channel and re-fetches `GET /kitchen/tickets` on connect,
-reconnect, and on each `ticket.*` event.
+The KDS screen subscribes to the WebSocket kitchen channel and
+re-fetches `GET /kitchen/orders` on connect, reconnect, and on each
+`order.*` event. Elapsed time is `mm:ss` from `placedAt`; there is
+no SLA/breach flag — no threshold is configured (D7 open).
 
 ## 7. Bills, splits, payments, refunds, receipts
 
@@ -320,7 +359,25 @@ GET /ws/table-session?token=<table-token>       # guest (token as query param he
                                                 # headers on a WS handshake;
                                                 # the token is single-use-scoped
                                                 # to this handshake and is not logged)
+GET /ws/kitchen?restaurant_id=<uuid>&dev_key=<key>   # kitchen — Stage 4, LIVE
+                                                # (dev-only key; never logged)
 ```
+
+> **Stage 4 status (23 Nov 2026): only `/ws/kitchen` exists.**
+> The staff/guest endpoints above still land in Stage 8. The
+> kitchen socket validates the dev key + restaurant BEFORE accept
+> (bad/missing key → close 4401, unknown restaurant → 4404,
+> production → close 4403 `kitchen_auth_not_configured`) and
+> registers the socket in the in-process `ConnectionManager`
+> (`backend/app/realtime/manager.py`). **Single-process only:**
+> no Redis broker — a second `api` replica would not receive
+> events published here (architecture.md § 6.3). Events published
+> so far: `order.created` (guest order placed, broadcast after the
+> placement transaction commits; replays are NOT broadcast) and
+> `order.status_changed` (kitchen transition, broadcast after the
+> transition commits). A failed/rolled-back request broadcasts
+> nothing. The envelope is § 9.3; `version` is a per-restaurant
+> in-memory counter.
 
 Authentication at connect time; failure closes the socket with code `4401`.
 The token is validated and then discarded from logs. (Alternative: a short-lived

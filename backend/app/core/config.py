@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = Field(
         default=15, alias="ACCESS_TOKEN_EXPIRE_MINUTES"
     )
+    # Kitchen Display System — DEV-ONLY access key (Stage 4). The KDS
+    # has no staff auth yet (that lands with JWT login in a later
+    # stage), so in non-production environments the kitchen endpoints
+    # and WebSocket accept this shared key instead. In production the
+    # kitchen routes refuse to serve at all (503) until staff auth
+    # exists. Never commit a real key; the default is dev-only.
+    kitchen_dev_key: str = Field(default="dev-kitchen-only", alias="KITCHEN_DEV_KEY")
 
     @field_validator("environment")
     @classmethod

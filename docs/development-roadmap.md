@@ -31,7 +31,7 @@
 | 3 | Backend APIs & database integration | **Done (guest scope) — 23 Nov 2026, verified (see Stage 3 report below).** Guest backend only: models/migrations/seed, QR sessions, menu, orders, help calls. The roadmap's original Stage 3 scope (auth, staff/kitchen/admin endpoints, bills, reviews, audit) was narrowed by the Stage 3 instruction to the guest domain — the rest stays open and moves to Stages 4–7. |
 | 3.1 | Concurrent idempotency hardening | **Done — 23 Nov 2026, verified.** Session-scoped atomic claim-before-create; genuine 8-thread concurrency test on real Postgres (old code created 8 orders, new code creates 1). See Stage 3.1 report below. |
 | 3.2 | Idempotency crash-recovery hardening | **Done — 23 Nov 2026, verified.** Single-transaction claim+order+response; no separately committed claim for a crash to orphan. See Stage 3.2 report below. |
-| 4 | Kitchen Display System | Not started |
+| 4 | Kitchen Display System | **Done — 23 Nov 2026, verified (see Stage 4 report below).** Order-level kitchen API + WebSocket + KDS board. |
 | 5 | Waiter / Staff dashboard | Not started |
 | 6 | Billing & cash payments | Not started |
 | 7 | Owner / Admin dashboard | Not started |
@@ -357,6 +357,58 @@ clean. No API or frontend contract changed.
 ---
 
 ## Stage 4 — Kitchen Display System
+
+**Status: Done — 23 Nov 2026 (verified).** Order-level kitchen API
+(`GET /kitchen/orders`, `GET /kitchen/orders/:id`,
+`PATCH /kitchen/orders/:id/status`, `GET /kitchen/restaurants`) +
+WebSocket `GET /ws/kitchen` + full-width KDS board at `/kitchen`
+(New / Preparing / Ready, ticking elapsed times, one large action
+button per ticket). Dev-only access: `KITCHEN_DEV_KEY` /
+`VITE_KITCHEN_DEV_KEY` (production returns 503 until staff auth
+lands). Verified: backend pytest 67 passed / 1 skipped (20 new
+kitchen SQLite tests + 1 Postgres concurrency test: 8 simultaneous
+PATCHes → exactly 1 success, 7× 409), frontend Vitest 47 passed
+(15 new kitchen tests), `npm run build` clean, live Postgres
+verification 15/15 (guest order → kitchen list → preparing →
+ready, WS `order.created` / `order.status_changed` delivery, no
+event after failed PATCH or replay, invalid transitions 409), 3
+real screenshots in `docs/stage4-screenshots/`. **No migration**
+— the order model already carried statuses, timestamps, version
+and snapshots (`alembic upgrade head` re-run on real Postgres:
+only the Stage 3/3.1 migrations apply). One real bug found and
+fixed during verification: the Vite dev proxy's `/ws` string
+shorthand does not forward WebSocket upgrades, so the KDS socket
+sat on "Connecting…" in dev — the proxy entry is now
+`{ target, ws: true }` and the socket reaches "Live" (verified
+through the proxy: `order.created` received).
+
+**Stage 4 recorded deviations (the Stage 4 brief OVERRIDES the
+roadmap/blueprint):**
+1. **Workflow is ORDER-LEVEL, not per-item.** No
+   `PATCH /orders/:orderId/items/:itemId/status`. When an order
+   transitions, its non-cancelled items move with it in the SAME
+   transaction (placed→preparing: items queued→preparing, set
+   `accepted_at` if null; preparing→ready: items →ready, set
+   `ready_at`).
+2. **NO `kitchen_tickets` table, NO stations.** A "ticket" IS an
+   order + its item snapshots. Station grouping/filtering is
+   deferred — menu items already carry a `station` TEXT field for
+   later use.
+3. **WebSockets arrive NOW for the kitchen (not Stage 8).** Guest
+   tracking still refetches via REST.
+4. **Statuses on the wire stay LOWERCASE.** Column mapping:
+   New = placed (+accepted if ever present), Preparing =
+   preparing, Ready = ready. Terminal states
+   (served/completed/cancelled) are NOT in the active queue.
+
+**Still open (named):** D7 (KDS hardware + offline fallback) —
+no SLA/breach flag on the board because no threshold is
+configured; staff/JWT auth (the dev key is the interim gate);
+per-station filtering; `served`/`completed` transitions (Stage 5);
+guest tracking over WebSocket (Stage 8); the in-process
+ConnectionManager is single-process only (a second `api` replica
+would not receive events — the Redis trigger in
+`architecture.md` § 6.3).
 
 **Goal:** the kitchen sees new orders instantly, works them by station, and
 updates item status — with timers and ready notifications.

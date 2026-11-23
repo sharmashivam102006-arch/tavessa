@@ -15,6 +15,7 @@ from app.core.deps import get_db, get_guest_context
 from app.core.errors import ApiError
 from app.core.rate_limit import ORDER_PLACE_LIMIT, limiter
 from app.schemas.guest import CancelOrderRequest, OrderPlacementRequest
+from app.realtime.manager import manager
 from app.services import order_service
 from app.services.table_service import GuestContext
 
@@ -23,7 +24,7 @@ router = APIRouter(tags=["orders"])
 
 @router.post("/orders", status_code=201)
 @limiter.limit(ORDER_PLACE_LIMIT)
-def place_order(
+async def place_order(
     request: Request,
     body: OrderPlacementRequest,
     ctx: GuestContext = Depends(get_guest_context),
@@ -40,6 +41,23 @@ def place_order(
     response_body, status, replayed = order_service.place_order(
         db, ctx, body, idempotency_key
     )
+    if not replayed:
+        # Broadcast AFTER the placement transaction committed (the
+        # service commits internally before returning). Replays are
+        # NOT broadcast — no new order exists. The service stays
+        # broadcast-free so tests can call it without a WebSocket.
+        placed = response_body["order"]
+        await manager.broadcast(
+            ctx.restaurant.id,
+            "order.created",
+            ctx.table.id,
+            {
+                "order_id": placed["id"],
+                "order_number": placed["orderNumber"],
+                "status": placed["status"],
+                "table_number": ctx.table.number,
+            },
+        )
     headers = {"Idempotency-Replayed": "true"} if replayed else {}
     return JSONResponse(content=response_body, status_code=status, headers=headers)
 

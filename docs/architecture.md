@@ -275,6 +275,24 @@ One endpoint per scope — see `api-plan.md` § 6 — with authentication at
 connect time (JWT for staff, QR token for guest). Unauthenticated sockets are
 closed immediately.
 
+> **Stage 4 status (23 Nov 2026):** the first WebSocket endpoint is
+> live — `GET /ws/kitchen` (dev-key auth, see `api-plan.md` § 9.1).
+> It is backed by the in-process `ConnectionManager`
+> (`backend/app/realtime/manager.py`): `dict[restaurant_id,
+> set[WebSocket]]`, best-effort broadcast per socket (a dead socket
+> is removed, never raises to the caller), per-restaurant
+> monotonically increasing `version` held in memory. Broadcast
+> happens at ROUTER level only AFTER the service transaction has
+> committed (`place_order` broadcasts `order.created` only when
+> `replayed=False`; the kitchen PATCH broadcasts
+> `order.status_changed` only after the transition commits) — the
+> services stay broadcast-free so tests can call them without a
+> socket and no event can be published from inside a transaction.
+> The frontend (`useKitchenSocket`) invalidates the
+> `kitchen-orders` TanStack Query key on (re)connect and on every
+> event and re-fetches via REST; WS data is never applied as state
+> directly. Reconnect is exponential backoff 1s/2s/4s… max 30s.
+
 **Event envelope (all events):**
 
 ```json
