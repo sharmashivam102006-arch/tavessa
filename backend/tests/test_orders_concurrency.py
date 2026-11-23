@@ -53,14 +53,21 @@ def _pg_url(server) -> str:
     return uri.replace("postgresql://", "postgresql+psycopg://", 1)
 
 
-@pytest.fixture
-def pg_client(tmp_path):
+@pytest.fixture(scope="module")
+def pg_client(tmp_path_factory):
     """Ephemeral real Postgres + per-request sessions + TestClient.
+
+    Module-scoped ON PURPOSE: each pgserver cluster costs a full
+    initdb on the 512M /tmp tmpfs, and a fresh cluster per test made
+    the suite flaky there (initdb failing mid-bootstrap under disk
+    pressure). One cluster serves all three tests; tests stay
+    independent via unique idempotency keys and delta assertions
+    (order counts before/after each burst), never absolute totals.
 
     Yields {"mk_client": callable returning a fresh TestClient,
     "session_factory": sessionmaker, "engine": engine}.
     """
-    server = pgserver.get_server(str(tmp_path / "pg"))
+    server = pgserver.get_server(str(tmp_path_factory.mktemp("pg31") / "pg"))
     url = _pg_url(server)
     engine = create_engine(
         url, poolclass=QueuePool, pool_size=10, max_overflow=5
@@ -169,20 +176,33 @@ def test_concurrent_same_key_creates_exactly_one_order(pg_client):
     token = pg_client["tokens"][5]
     body = _order_body(pg_client["menus"][5])
 
+    session = pg_client["session_factory"]()
+    try:
+        orders_before = session.execute(
+            select(func.count()).select_from(Order)
+        ).scalar_one()
+    finally:
+        session.close()
+
     responses = _post_burst(pg_client["mk_client"], token, body, key)
 
     # Every request succeeds (the owner creates, the rest replay).
     assert all(r.status_code == 201 for r in responses), [
         (r.status_code, r.text) for r in responses
     ]
-    # Exactly one order, one order number, one order id everywhere.
+    # Exactly one NEW order, one order number, one order id everywhere.
+    # (Delta, not absolute total: the module-scoped DB is shared.)
+    order_ids = {r.json()["order"]["id"] for r in responses}
+    assert len(order_ids) == 1
+    order_id = uuid.UUID(next(iter(order_ids)))
     session = pg_client["session_factory"]()
     try:
-        orders = session.execute(select(Order)).scalars().all()
-        assert len(orders) == 1
-        assert len({o.order_number for o in orders}) == 1
-        order = orders[0]
-        assert order.table_session_id is not None
+        orders_total = session.execute(
+            select(func.count()).select_from(Order)
+        ).scalar_one()
+        assert orders_total == orders_before + 1
+        order = session.get(Order, order_id)
+        assert order is not None
         item_rows = session.execute(
             select(func.count())
             .select_from(OrderItem)
@@ -191,8 +211,6 @@ def test_concurrent_same_key_creates_exactly_one_order(pg_client):
         assert item_rows == 2  # the two lines of the single request
     finally:
         session.close()
-    order_ids = {r.json()["order"]["id"] for r in responses}
-    assert order_ids == {str(order.id)}
     # Exactly one owner response (no replay header); the rest replayed.
     replayed = [r for r in responses if r.headers.get("Idempotency-Replayed") == "true"]
     owners = [r for r in responses if "Idempotency-Replayed" not in r.headers]
@@ -226,6 +244,14 @@ def test_same_key_in_other_session_is_independent(pg_client):
     body5 = _order_body(pg_client["menus"][5])
     body6 = _order_body(pg_client["menus"][6])
 
+    session = pg_client["session_factory"]()
+    try:
+        orders_before = session.execute(
+            select(func.count()).select_from(Order)
+        ).scalar_one()
+    finally:
+        session.close()
+
     responses5 = _post_burst(
         pg_client["mk_client"], pg_client["tokens"][5], body5, key
     )
@@ -239,8 +265,16 @@ def test_same_key_in_other_session_is_independent(pg_client):
 
     session = pg_client["session_factory"]()
     try:
-        orders = session.execute(select(Order)).scalars().all()
-        assert len(orders) == 2  # one per session, no cross-session leak
-        assert len({o.order_number for o in orders}) == 2
+        orders_total = session.execute(
+            select(func.count()).select_from(Order)
+        ).scalar_one()
+        # Delta, not absolute total: the module-scoped DB is shared.
+        assert orders_total == orders_before + 2  # one per session, no cross-session leak
+        numbers = session.execute(
+            select(Order.order_number).where(
+                Order.id.in_([uuid.UUID(i) for i in id5 | id6])
+            )
+        ).scalars().all()
+        assert len(set(numbers)) == 2
     finally:
         session.close()
