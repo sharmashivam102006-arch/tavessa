@@ -72,6 +72,14 @@ def _place_one(client, setup, key, name="Butter Naan"):
 
 
 def _kitchen_list(client, setup, params=""):
+    # The shared test DB accumulates active orders from every module
+    # (Stage 6 billing tests place dozens), so the default 20-row
+    # page no longer contains a just-placed order. Fetch the API max
+    # (100) unless the caller sets its own page size — the
+    # pagination test passes ?per_page=2 explicitly and is unaffected.
+    if "per_page=" not in params:
+        sep = "&" if params.startswith("?") and len(params) > 1 else "?"
+        params = f"{params}{sep}per_page=100"
     return client.get(
         f"/api/v1/kitchen/orders{params}", headers=kitchen_headers()
     )
@@ -547,7 +555,7 @@ def test_ws_order_created_and_status_changed(client, setup):
     ) as ws:
         placed = _place_one(client, setup, "k-ws-1")
         listed = client.get(
-            f"/api/v1/kitchen/orders?restaurant_id={rid}",
+            f"/api/v1/kitchen/orders?restaurant_id={rid}&per_page=100",
             headers=kitchen_headers(),
         ).json()["data"]
         listed = next(o for o in listed if o["id"] == placed["id"])

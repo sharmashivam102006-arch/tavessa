@@ -19,6 +19,7 @@ import type {
   Order,
   OrderPlacementRequest,
   OrderPlacementResponse,
+  Receipt,
   ReviewRequest,
 } from "@/shared/api/types";
 
@@ -102,43 +103,54 @@ export function requestHelpCall(tableToken: string, request: HelpCallRequest) {
   );
 }
 
-/** The session's open bill (api-plan.md § 7.1: GET /guest/bill). */
+/** The session's open bill (api-plan.md § 7.1 as built in Stage 6:
+ * GET /guest/bill). 404 when no bill exists yet. */
 export function fetchGuestBill(tableToken: string) {
   return api.get<{ data: Bill }>(`${V1}/guest/bill`, {
     headers: tableHeaders(tableToken),
   });
 }
 
-/** Generate the bill from the session's unpaid orders
- * (api-plan.md § 7.1: POST /bills). */
+/** Generate (or retrieve/regenerate) the bill from the session's
+ * unpaid orders (Stage 6: POST /guest/bill). One open bill per
+ * session — a repeat call returns the same bill, never a duplicate. */
 export function requestBill(tableToken: string) {
-  return api.post<{ data: Bill }>(`${V1}/bills`, {}, {
+  return api.post<{ data: Bill }>(`${V1}/guest/bill`, {}, {
     headers: tableHeaders(tableToken),
   });
 }
 
 /** Guest taps "Pay by Cash" — requests payment, creates NO payment
- * (api-plan.md § 7.1: PATCH /bills/:id/request-payment). Only staff
- * can confirm cash collection (POST /bills/:id/payments, staff JWT). */
-export function requestCashPayment(tableToken: string, billId: string) {
+ * (Stage 6: PATCH /guest/bill/request-payment). Only staff can
+ * confirm cash collection (POST /staff/bills/:id/payments). */
+export function requestCashPayment(tableToken: string) {
   return api.patch<{ data: Bill }>(
-    `${V1}/bills/${encodeURIComponent(billId)}/request-payment`,
+    `${V1}/guest/bill/request-payment`,
     {},
     { headers: tableHeaders(tableToken) },
   );
 }
 
-/** Split a bill (api-plan.md § 7.1: POST /bills/:id/splits). */
+/** Split a bill (Stage 6: POST /guest/bill/splits). Validated
+ * server-side: equal parts >= 2, custom amounts summing exactly to
+ * the total. */
 export function createBillSplit(
   tableToken: string,
-  billId: string,
   split: BillSplitRequest,
 ) {
   return api.post<{ data: Bill }>(
-    `${V1}/bills/${encodeURIComponent(billId)}/splits`,
+    `${V1}/guest/bill/splits`,
     split,
     { headers: tableHeaders(tableToken) },
   );
+}
+
+/** Receipt data (Stage 6: GET /guest/bill/receipt). Only after the
+ * bill is paid — otherwise a 409. */
+export function fetchGuestReceipt(tableToken: string) {
+  return api.get<{ data: Receipt }>(`${V1}/guest/bill/receipt`, {
+    headers: tableHeaders(tableToken),
+  });
 }
 
 /** Review after the bill is paid (api-plan.md § 8: POST /guest/reviews). */

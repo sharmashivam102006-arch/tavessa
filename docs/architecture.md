@@ -310,6 +310,21 @@ closed immediately.
 > `useKitchenSocket`: it invalidates the `staff-tables`,
 > `staff-orders`, `staff-help-calls` and `staff-table-detail`
 > TanStack Query keys on (re)connect and on every event.
+>
+> **Stage 6 status (23 Nov 2026):** bill/payment events ride the
+> SAME staff channel — `bill.created` (guest router, only when a NEW
+> bill is generated), `bill.requested` (guest router, only on the
+> actual `issued → payment_requested` transition), `payment.recorded`
+> and `bill.paid` (staff payment router, after the payment commits;
+> nothing is broadcast on an idempotency replay — a replay is not a
+> new payment). No event is broadcast on a failed/rolled-back
+> operation. `useStaffSocket` now also invalidates the `staff-bills`
+> and `staff-bill` query keys. The guest bill page does NOT use a
+> socket: it refetches via REST (on focus, after its own actions, and
+> on a 10s interval while unpaid) — the guest WS channel is Stage 8.
+> The single-process limitation is unchanged (see § 6.3): events
+> published in one process reach only sockets connected to that
+> process.
 
 **Event envelope (all events):**
 
@@ -337,7 +352,7 @@ authority.
 | `table-session:{session_id}` | The guest session (+ staff viewing that table) | `order.status_changed`, `order.item_ready`, `bill.*`, `help_call.*` for that session |
 | `kitchen:{restaurant_id}:{station}` | KDS filtered view (subscription filter, not a separate truth) | `ticket.*` for that station |
 | `kitchen:{restaurant_id}` | KDS | **Stage 4, LIVE:** `order.created`, `order.status_changed` |
-| `staff:{restaurant_id}` | Staff board | **Stage 5, LIVE:** `order.created`, `order.status_changed` (incl. kitchen transitions), `help_call.opened`, `help_call.acknowledged`, `help_call.resolved` |
+| `staff:{restaurant_id}` | Staff board | **Stage 5, LIVE:** `order.created`, `order.status_changed` (incl. kitchen transitions), `help_call.opened`, `help_call.acknowledged`, `help_call.resolved`. **Stage 6, LIVE:** `bill.created`, `bill.requested`, `payment.recorded`, `bill.paid`. |
 
 Authorisation is checked at subscription time, per channel, against the
 caller's restaurant and (for guests) table session. A guest socket cannot

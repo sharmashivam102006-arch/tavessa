@@ -18,9 +18,21 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core.rate_limit import limiter
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
+
+# The slowapi limiter is an in-process, per-IP guard for production
+# abuse (60 order placements/minute from one IP). The whole SQLite
+# suite shares one TestClient IP ("testclient") and one process, so
+# the caps are exhausted by legitimate test traffic long before the
+# suite finishes — order placement then 429s and unrelated tests
+# fail in a cascade. No test asserts rate-limit behaviour, so the
+# limiter is disabled for the suite (the Postgres concurrency
+# modules already did this in their own fixtures). The limiter still
+# runs in production; this only affects tests.
+limiter.enabled = False
 
 engine = create_engine(
     "sqlite://",

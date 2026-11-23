@@ -1,12 +1,13 @@
-/** Waiter / Staff dashboard (Stage 5).
+/** Waiter / Staff dashboard (Stages 5–6).
  *
  * Floor grid (live table state), table detail on selection, active
- * orders with "Ready to serve" first, and the help-call queue —
- * all fed by REST; a WebSocket invalidates the queries on connect,
- * reconnect and every staff event — the socket never writes state
- * directly. WS failure does not break the board: it keeps showing
- * the last REST snapshot, with a Refresh button and a reconnecting
- * banner.
+ * orders with "Ready to serve" first, the help-call queue, and the
+ * billing section (bill requests queue + cash collection + receipt)
+ * — all fed by REST; a WebSocket invalidates the queries on
+ * connect, reconnect and every staff event — the socket never
+ * writes state directly. WS failure does not break the board: it
+ * keeps showing the last REST snapshot, with a Refresh button and
+ * a reconnecting banner.
  *
  * `?demo=1` shows clearly labelled sample data from demo-staff.ts
  * — never mixed with live data, never by default.
@@ -30,6 +31,8 @@ import type {
 } from "@/shared/api/types";
 import { isStaffConfigured } from "@/features/staff/api/staffApi";
 import { ActiveOrders } from "@/features/staff/components/ActiveOrders";
+import { BillDetail } from "@/features/staff/components/BillDetail";
+import { BillingQueue } from "@/features/staff/components/BillingQueue";
 import { FloorGrid } from "@/features/staff/components/FloorGrid";
 import { HelpCallQueue } from "@/features/staff/components/HelpCallQueue";
 import { TableDetail } from "@/features/staff/components/TableDetail";
@@ -38,7 +41,10 @@ import {
   DEMO_ORDERS,
   DEMO_TABLES,
 } from "@/features/staff/data/demo-staff";
+import { DEMO_BILL_DETAIL, DEMO_BILLS } from "@/features/staff/data/demo-bills";
 import {
+  useStaffBill,
+  useStaffBills,
   useStaffHelpCalls,
   useStaffOrders,
   useStaffRestaurants,
@@ -103,6 +109,9 @@ export function StaffPage() {
   const [selectedTableId, setSelectedTableId] = useState<string | undefined>(
     undefined,
   );
+  const [selectedBillId, setSelectedBillId] = useState<string | undefined>(
+    undefined,
+  );
 
   const configured = isStaffConfigured();
   const restaurantsQuery = useStaffRestaurants();
@@ -125,6 +134,11 @@ export function StaffPage() {
   const tablesQuery = useStaffTables(demo ? undefined : restaurantId);
   const ordersQuery = useStaffOrders(demo ? undefined : restaurantId);
   const helpCallsQuery = useStaffHelpCalls(demo ? undefined : restaurantId);
+  const billsQuery = useStaffBills(demo ? undefined : restaurantId);
+  const billDetailQuery = useStaffBill(
+    demo ? undefined : restaurantId,
+    selectedBillId,
+  );
   const detailQuery = useStaffTableDetail(
     demo ? undefined : restaurantId,
     selectedTableId,
@@ -183,6 +197,31 @@ export function StaffPage() {
             restaurantId="demo"
             demo
           />
+        </div>
+        <div className="mt-6 grid gap-6 lg:grid-cols-3">
+          <div className="lg:col-span-1">
+            <BillingQueue
+              bills={DEMO_BILLS}
+              selectedBillId={selectedBillId}
+              onSelect={(id) =>
+                setSelectedBillId(id === selectedBillId ? undefined : id)
+              }
+              demo
+            />
+          </div>
+          <div className="lg:col-span-2">
+            {selectedBillId ? (
+              <BillDetail
+                bill={DEMO_BILL_DETAIL}
+                restaurantId="demo"
+                demo
+              />
+            ) : (
+              <p className="rounded-xl border border-stone-200 bg-white p-6 text-sm text-stone-600">
+                Select a bill to see its items and collect the cash.
+              </p>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -267,10 +306,17 @@ export function StaffPage() {
   const tables = tablesQuery.data?.data ?? [];
   const orders = ordersQuery.data?.data ?? [];
   const helpCalls = helpCallsQuery.data?.data ?? [];
+  const bills = billsQuery.data?.data ?? [];
   const loading =
-    tablesQuery.isPending || ordersQuery.isPending || helpCallsQuery.isPending;
+    tablesQuery.isPending ||
+    ordersQuery.isPending ||
+    helpCallsQuery.isPending ||
+    billsQuery.isPending;
   const queryError =
-    tablesQuery.error ?? ordersQuery.error ?? helpCallsQuery.error;
+    tablesQuery.error ??
+    ordersQuery.error ??
+    helpCallsQuery.error ??
+    billsQuery.error;
 
   return (
     <div>
@@ -305,6 +351,7 @@ export function StaffPage() {
               void tablesQuery.refetch();
               void ordersQuery.refetch();
               void helpCallsQuery.refetch();
+              void billsQuery.refetch();
             }}
             className="mt-4 rounded-lg bg-red-700 px-4 py-2 text-sm font-semibold text-white"
           >
@@ -345,6 +392,32 @@ export function StaffPage() {
               <ActiveOrders orders={orders} restaurantId={restaurantId} />
             </div>
             <HelpCallQueue calls={helpCalls} restaurantId={restaurantId} />
+          </div>
+
+          <div className="mt-6 grid gap-6 lg:grid-cols-3">
+            <div className="lg:col-span-1">
+              <BillingQueue
+                bills={bills}
+                selectedBillId={selectedBillId}
+                onSelect={(id) =>
+                  setSelectedBillId(id === selectedBillId ? undefined : id)
+                }
+              />
+            </div>
+            <div className="lg:col-span-2">
+              {selectedBillId && billDetailQuery.data ? (
+                <BillDetail
+                  bill={billDetailQuery.data.data}
+                  restaurantId={restaurantId}
+                />
+              ) : selectedBillId && billDetailQuery.isPending ? (
+                <div className="h-64 animate-pulse rounded-xl border border-stone-200 bg-white" />
+              ) : (
+                <p className="rounded-xl border border-stone-200 bg-white p-6 text-sm text-stone-600">
+                  Select a bill to see its items and collect the cash.
+                </p>
+              )}
+            </div>
           </div>
         </div>
       )}

@@ -14,7 +14,7 @@ The first demonstration restaurant is **Zaika**. The architecture is SaaS-ready:
 every tenant-scoped record belongs to a restaurant, so a second restaurant can be
 added without a schema redesign.
 
-> **Status: Stage 5 complete (Waiter / Staff dashboard) — 23 Nov 2026.** Blueprint + project foundation
+> **Status: Stage 6 complete (Billing and cash collection) — 23 Nov 2026.** Blueprint + project foundation
 > are done and verified (see "Development setup" below). Stage 2 built the
 > guest interface & digital menu for Zaika as a frontend against the API
 > contract in `docs/api-plan.md`, using clearly-marked sample menu data.
@@ -29,8 +29,17 @@ added without a schema redesign.
 > Waiter / Staff dashboard: floor grid, active orders, serving
 > (ready → served), help calls (acknowledge → resolve), and the
 > `/ws/staff` channel — all dev-key gated, no production login yet.
-> The owner/admin dashboard is still a route shell, and there are
-> no bills, payments, reviews, or staff login yet (Stages 6–8).
+> Stage 6 added billing and cash collection: server-priced bills from
+> order snapshots (integer paise, tax shown as "not configured" — D1 is
+> still undecided), equal/custom splits, guest Pay by Cash (which creates
+> no payment), staff cash confirmation in one idempotent transaction
+> (receipt `R-YYYY-MM-DD-NNN`, `bill.created` / `bill.requested` /
+> `payment.recorded` / `bill.paid` on the staff channel), and receipts in
+> both UIs. Cash only — no UPI, cards, gateways or online payments.
+> Refunds, bill void, the daily cash report and owner history are
+> deferred to Stage 7 (they need owner auth). The owner/admin dashboard
+> is still a route shell, and there are no reviews or staff login yet
+> (Stages 7–8).
 > Do not treat any endpoint, screen, or workflow in these docs as
 > shipped until its stage in `docs/development-roadmap.md` is
 > marked complete and verified.

@@ -13,6 +13,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   acknowledgeHelpCall,
+  fetchStaffBill,
+  fetchStaffBillPayments,
+  fetchStaffBillReceipt,
+  fetchStaffBills,
   fetchStaffHelpCalls,
   fetchStaffOrders,
   fetchStaffRestaurants,
@@ -20,6 +24,7 @@ import {
   fetchStaffTables,
   getStaffDevKey,
   isStaffConfigured,
+  recordStaffPayment,
   resolveHelpCall,
   serveStaffOrder,
 } from "@/features/staff/api/staffApi";
@@ -129,6 +134,12 @@ function useInvalidateStaff(restaurantId: string) {
     void queryClient.invalidateQueries({
       queryKey: ["staff-table-detail", restaurantId],
     });
+    void queryClient.invalidateQueries({
+      queryKey: ["staff-bills", restaurantId],
+    });
+    void queryClient.invalidateQueries({
+      queryKey: ["staff-bill", restaurantId],
+    });
   };
 }
 
@@ -147,6 +158,121 @@ export function useResolveHelpCall(restaurantId: string) {
   return useMutation({
     mutationFn: (callId: string) => resolveHelpCall(callId, restaurantId),
     onSuccess: invalidate,
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Billing (Stage 6)                                                   */
+/* ------------------------------------------------------------------ */
+
+/** The bill queue for one restaurant (payment_requested first).
+ * Key ["staff-bills", restaurantId, status]. */
+export function useStaffBills(
+  restaurantId: string | undefined,
+  status?: "issued" | "payment_requested" | "paid",
+) {
+  return useQuery({
+    queryKey: ["staff-bills", restaurantId, status ?? "all"],
+    queryFn: () => fetchStaffBills(restaurantId as string, status),
+    retry: false,
+    staleTime: 10_000,
+    enabled: Boolean(restaurantId) && isStaffConfigured(),
+  });
+}
+
+/** One bill in full: items, splits, payment history, totals. */
+export function useStaffBill(
+  restaurantId: string | undefined,
+  billId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["staff-bill", restaurantId, billId],
+    queryFn: () => fetchStaffBill(restaurantId as string, billId as string),
+    retry: false,
+    staleTime: 10_000,
+    enabled:
+      Boolean(restaurantId) && Boolean(billId) && isStaffConfigured(),
+  });
+}
+
+/** Payment history for a bill, newest first. */
+export function useStaffBillPayments(
+  restaurantId: string | undefined,
+  billId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["staff-bill-payments", restaurantId, billId],
+    queryFn: () =>
+      fetchStaffBillPayments(restaurantId as string, billId as string),
+    retry: false,
+    staleTime: 10_000,
+    enabled:
+      Boolean(restaurantId) && Boolean(billId) && isStaffConfigured(),
+  });
+}
+
+/** Receipt data for a paid bill. Only enabled once the bill is
+ * paid — before that the endpoint 409s, so the hook stays idle. */
+export function useStaffBillReceipt(
+  restaurantId: string | undefined,
+  billId: string | undefined,
+  billPaid: boolean,
+) {
+  return useQuery({
+    queryKey: ["staff-bill-receipt", restaurantId, billId],
+    queryFn: () =>
+      fetchStaffBillReceipt(restaurantId as string, billId as string),
+    retry: false,
+    staleTime: 60_000,
+    enabled:
+      Boolean(restaurantId) &&
+      Boolean(billId) &&
+      billPaid &&
+      isStaffConfigured(),
+  });
+}
+
+/** Confirm cash collection for a bill (or one split). The mutation
+ * generates ONE idempotency key per confirmation attempt and reuses
+ * it across retries of that attempt (the key lives in the closure,
+ * so a double-tap cannot create two payments). On success the
+ * bills + tables + table-detail queries are invalidated; on error
+ * the mutation error shows on the panel and the bill stays in the
+ * queue. */
+export function useRecordPayment(restaurantId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (args: {
+      billId: string;
+      amountPaise: number;
+      billSplitId?: string;
+      note?: string;
+    }) =>
+      recordStaffPayment(restaurantId, args.billId, {
+        amountPaise: args.amountPaise,
+        billSplitId: args.billSplitId,
+        note: args.note,
+      }),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["staff-bills", restaurantId],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["staff-bill", restaurantId, variables.billId],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["staff-bill-payments", restaurantId, variables.billId],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["staff-bill-receipt", restaurantId, variables.billId],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["staff-tables", restaurantId],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["staff-table-detail", restaurantId],
+      });
+    },
   });
 }
 
@@ -195,6 +321,12 @@ export function useStaffSocket(
       });
       void queryClient.invalidateQueries({
         queryKey: ["staff-table-detail", restaurantId],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["staff-bills", restaurantId],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["staff-bill", restaurantId],
       });
     };
 

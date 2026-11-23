@@ -312,63 +312,112 @@ re-fetches `GET /kitchen/orders` on connect, reconnect, and on each
 `order.*` event. Elapsed time is `mm:ss` from `placedAt`; there is
 no SLA/breach flag — no threshold is configured (D7 open).
 
-## 7. Bills, splits, payments, refunds, receipts
+## 7. Bills, splits, payments, receipts — as built in Stage 6 (23 Nov 2026)
+
+Cash only. There is no guest endpoint that creates a payment, no UPI /
+card / gateway / wallet path, no refunds, no bill void, no daily cash
+report and no owner bills/payments history in this stage — all of those
+need owner auth (Stage 7). The brief's event names are used, not the
+older names in the original § 7 draft: `bill.created`, `bill.requested`,
+`payment.recorded`, `bill.paid` (`bill.payment_requested` /
+`payment.confirmed` are NOT used). There is no `audit_logs` table: the
+audit trail is the append-only `payments` table.
 
 ### 7.1 Bills
 
 | Method & path | Auth | Notes |
 |---|---|---|
-| `POST /bills` | Guest (own session) or JWT (waiter/owner) | Body `{ "table_session_id": "…" }` (staff) — guest session is derived from the token. Generates a bill from the session's unpaid orders in one transaction. One open bill per session (second call returns the existing open bill, `200`, not a duplicate — this is a status guard, not idempotency-key replay). Returns the bill with items + totals. |
-| `GET /bills/:id` | JWT or guest (own session) | Bill + items + splits + payments + receipt link. |
-| `GET /bills` | JWT (waiter/owner) | Filters: `status`, `table_id`, `from`, `to`, `session_id`. |
-| `GET /guest/bill` | `X-Table-Token` | The session's open bill (or the most recent paid bill for the receipt view). |
-| `PATCH /bills/:id/request-payment` | Guest (own session) or JWT | `issued → payment_requested`. Guest tapping "Pay by Cash" calls this. Creates no payment. Publishes `bill.payment_requested` + a staff notification. |
-| `POST /bills/:id/splits` | Guest (own session) or JWT | `{ "mode": "equal", "parts": 2 }` or `{ "mode": "custom", "amounts_paise": [50000, 50000] }`. Validated: equal — parts ≥ 2; custom — amounts sum exactly to `total_paise`, each > 0. Replaces existing unpaid splits (in a transaction). Returns the splits. |
-| `POST /bills/:id/void` | JWT (owner) | `{ "reason": "…" }`. `issued/payment_requested → voided`. Audited. A voided bill's orders become billable again (Stage 6 detail). |
+| `POST /api/v1/guest/bill` | `X-Table-Token` | Create-or-retrieve for the active session. No bill → generate (status `issued`, broadcast `bill.created` after commit); open `issued` bill → regenerate from current non-cancelled orders (decision 8) and return 200; open `payment_requested` bill → return as-is (frozen); paid bill + new billable items → NEW bill with only unreferenced items; no billable items and no bill → 409 `nothing_to_bill`. Returns bill + items + splits + payments + totals + outstanding. |
+| `GET /api/v1/guest/bill` | `X-Table-Token` | The session's open bill, else the most recent paid bill (receipt view); none → 404 `bill_not_found`. Another session's bill → 404, not 403. |
+| `PATCH /api/v1/guest/bill/request-payment` | `X-Table-Token` | Empty body. `issued → payment_requested` (unpaid splits → `payment_requested` too); creates NO payment row; already requested → 200 idempotent; paid → 409. Broadcasts `bill.requested` after commit (only on the actual transition). |
+| `POST /api/v1/guest/bill/splits` | `X-Table-Token` | `{ "mode": "equal", "parts": N }` or `{ "mode": "custom", "amountsPaise": [...] }`. Server-validated: equal parts ≥ 2 (remainder 1p to earliest parts); custom sums exactly to total, each > 0, else 422. Replaces existing UNPAID splits in one transaction; refused once any split is paid or `payment_requested` → 409. Only while the bill is `issued`/`payment_requested`. |
+| `GET /api/v1/guest/bill/receipt` | `X-Table-Token` | Only after the bill is paid, else 409 `receipt_not_available`. |
+| `GET /api/v1/staff/bills?restaurant_id=&status=&table_id=&page=&per_page=` | `X-Staff-Dev-Key` (dev only; production → 503) | List, `payment_requested` first, then `issued_at` desc. Row: table number, bill number, status, total, amount paid, outstanding, `payment_requested_at`, order count. Unknown status → 422; unknown/wrong-restaurant table → 404. Returns paid bills too — filter with `status=`; the staff queue drops paid rows itself. |
+| `GET /api/v1/staff/bills/:id?restaurant_id=` | `X-Staff-Dev-Key` | Full bill: items, splits, payments (history), totals, outstanding, table/session info. Unknown id or wrong restaurant → 404. |
+| `GET /api/v1/staff/bills/:id/payments?restaurant_id=` | `X-Staff-Dev-Key` | Payment history for the bill, newest first. |
+| `GET /api/v1/staff/bills/:id/receipt?restaurant_id=` | `X-Staff-Dev-Key` | Receipt data, only after paid, else 409. |
+| `GET /api/v1/staff/tables/:id` | `X-Staff-Dev-Key` | Table detail now includes `open_bill` (bill number, status, total, outstanding) when one exists. |
+
+Bill numbers are `B-YYYY-MM-DD-NNN`, sequential per restaurant per day
+under the restaurant row lock (same pattern as `ZAIKA-0001` order
+numbers). Calculation is server-side only, integer paise, from
+`order_items` snapshots: line = unit × quantity; subtotal = Σ lines;
+tax / service charge / discount = 0 (D1 undecided — the bill and receipt
+show tax as explicitly "not configured", never "0% GST"); total =
+subtotal; outstanding = total − amount paid. Client-supplied price/total
+fields → 422. A partially-paid `issued` bill does not regenerate; a
+no-change regen does not bump `version`.
 
 ### 7.2 Payments — cash confirmation (staff only)
 
 ```
-POST /api/v1/bills/:id/payments
-Authorization: Bearer <staff jwt>   (waiter or owner only)
-{
-  "amount_paise": 50000,
-  "bill_split_id": "…",        // optional; null = whole bill
-  "change_due_paise": 0,       // optional, per D9
-  "note": "…"                  // optional
-}
+POST /api/v1/staff/bills/:id/payments?restaurant_id=…
+X-Staff-Dev-Key: <dev key>
+Idempotency-Key: <required, else 422>
+{ "amountPaise": 50000, "billSplitId": "…", "note": "…" }
 ```
 
-**Server behaviour (one transaction, row lock on the bill/split):**
+`method` is NOT accepted from the client (cash is the only method — a
+body `method` other than cash → 422; no method field → cash). Splits
+exist → `billSplitId` required, else 422; no splits → `billSplitId`
+must be omitted, else 422.
 
-1. Load the bill (and split) `FOR UPDATE`. Reject if the bill is not
-   `issued`/`payment_requested` or the split is already `paid` → `409`.
-2. Validate `amount_paise` > 0 and ≤ amount due on the bill/split.
-   Any other amount → `422`.
-3. Create the `payments` row (`method=cash`, `collected_by=current user`,
-   `receipt_number` generated).
-4. Update `amount_paid_paise`; if the bill/split is fully paid, set status
-   `paid` + `paid_at`; if all splits are paid, the bill is `paid`.
-5. If all bills for the session are paid, the session may be closed by staff
-   (not automatically — Stage 6 detail).
-6. Write the audit log in the same transaction.
-7. Commit, then publish `payment.confirmed` + `bill.paid`.
+**Server behaviour (ONE transaction, Stage 3.2 claim pattern):**
+
+1. Load the bill (+ split) FOR UPDATE — the bill row lock is taken
+   BEFORE the idempotency claim is inserted (a claim INSERT takes a
+   `FOR KEY SHARE` lock on the bill via the `bill_id` FK, which
+   deadlocked against `FOR UPDATE` in the Postgres concurrency test).
+   Reject if the bill is not `issued`/`payment_requested` or the split
+   is already `paid` → `409` with the existing payment id + receipt
+   number in details.
+2. Idempotency claim, scope `(restaurant_id, bill_id, endpoint,
+   key)` — same key + same body → replay `201` with the original
+   payment (`Idempotency-Replayed: true`, no WS broadcast); same key +
+   different body → `422`; a failed payment rolls the claim back, so a
+   corrected retry with the same key succeeds.
+3. Validate `amount_paise` > 0 and ≤ amount due on the target (whole
+   bill outstanding, or split outstanding), else `422`.
+4. Create the `payments` row (`method=cash`, `collected_by=NULL`,
+   `change_due_paise=0`, `receipt_number` generated
+   `R-YYYY-MM-DD-NNN`, sequential per restaurant per day).
+5. Update `amount_paid_paise`; if the target is fully paid → split
+   `paid` + `paid_at` (or bill `paid` + `paid_at` when the whole bill
+   or all splits are paid).
+6. Commit, then broadcast `payment.recorded` and (if fully paid)
+   `bill.paid` after commit. No event on replay or on a failed payment.
 
 Response: `201` with the payment + the updated bill + receipt data.
-A second confirmation for the same split fails at step 1 (`409`) and returns
-the existing payment — this is the double-confirmation guard.
+**A guest token on this path returns `401`** (missing staff key — the
+dev gate returns 401 for a missing key; a kitchen key sent *as* the
+staff key → 403). A second confirmation for the same split with a NEW
+key → `409` (status guard). Session close after all bills are paid is
+NOT in this stage (deferred in Stage 5, still deferred).
 
-**There is no guest endpoint that creates a payment.** Any request to this
-path with a guest token returns `403`.
+### 7.3 Refunds & receipts — deferred / as built
 
-### 7.3 Refunds & receipts
+Refunds (`POST /bills/:id/refunds`), bill void (`POST /bills/:id/void`),
+the daily cash report (`GET /admin/cash-report`) and the owner
+bills/payments history are DEFERRED to Stage 7 (owner auth + D3).
+`GET /payments` (cash report source) does not exist yet. The `refunds`
+table in `database-design.md` § 3.20 is a blueprint row, not a built
+table.
 
 | Method & path | Auth | Notes |
 |---|---|---|
-| `POST /bills/:id/refunds` | JWT (owner only) | `{ "payment_id": "…", "amount_paise": …, "reason": "…" }`. Validated against the payment minus prior refunds. Creates the refund, updates payment + bill status (`refunded` / `partially_refunded`), audited. |
-| `GET /bills/:id/receipt` | JWT or guest (own session) | Receipt data (JSON). Printable view is a frontend rendering of this data. Receipts are read-only; there is no "edit receipt" endpoint. |
-| `GET /payments` | JWT (owner; waiter sees own) | Cash report source. Filters: `from`, `to`, `collected_by`. |
-| `GET /admin/cash-report?date=YYYY-MM-DD` | JWT (owner) | Daily cash: collected, per collector, outstanding bills, refunds. Computed from `payments`/`bills`/`refunds` on read. |
+| `GET /api/v1/guest/bill/receipt` | `X-Table-Token` | Receipt data (JSON), only after paid (409 before). |
+| `GET /api/v1/staff/bills/:id/receipt?restaurant_id=` | `X-Staff-Dev-Key` | Same receipt data for staff. |
+
+Receipt data: restaurant + branch name, bill number, receipt number,
+table number, order numbers, itemised lines (from `bill_items`
+snapshots), subtotal, tax status (`"Tax: not configured — no tax rate
+has been set for this restaurant"`), total payable, amount received (Σ
+confirmed payments), outstanding balance, payment method `"Cash"`,
+payment timestamp(s), receipt timestamp (= `paid_at`). No PDF in this
+stage — the receipt is a structured API response + a rendered view in
+both UIs. A receipt is never issued as paid before the backend confirms
+a successful cash payment (enforced by the 409 + tests).
+
 
 ## 8. Menu & admin
 

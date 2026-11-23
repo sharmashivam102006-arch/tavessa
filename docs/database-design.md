@@ -413,19 +413,26 @@ failure branch). A bill is generated from the session's unpaid orders.
 |---|---|---|
 | `id` | UUID PK | |
 | `restaurant_id` | UUID NN FK | |
+| `branch_id` | UUID FK | Nullable (single-branch Zaika in v1) |
 | `table_session_id` | UUID NN FK → table_sessions.id | |
+| `table_id` | UUID NN FK → dining_tables.id | Denormalised for staff lists, like orders/help_calls |
 | `bill_number` | TEXT NN | e.g. `B-2026-11-23-018`. UQ per restaurant. |
-| `status` | TEXT NN DEFAULT 'issued' | See § 6 — bill status machine |
+| `status` | TEXT NN DEFAULT 'issued' | See § 6 — bill status machine. CHECK `issued \| payment_requested \| paid` only — no `voided`/`refunded` states in Stage 6 (void is owner-only, deferred to Stage 7). |
 | `subtotal_paise` | BIGINT NN | Server-computed from bill items |
-| `tax_paise` | BIGINT NN DEFAULT 0 | Per D1 |
+| `tax_paise` | BIGINT NN DEFAULT 0 | Per D1 — UNDECIDED in Stage 6: 0 means "not configured", not 0% (see Stage 6 decisions in the roadmap) |
 | `service_charge_paise` | BIGINT NN DEFAULT 0 | Per D1 |
 | `discount_paise` | BIGINT NN DEFAULT 0 | Per D2; 0 unless discounts are decided in |
 | `total_paise` | BIGINT NN | Server-computed |
 | `amount_paid_paise` | BIGINT NN DEFAULT 0 | Sum of confirmed payments; updated in the payment transaction |
 | `issued_at` | TIMESTAMPTZ NN DEFAULT now() | |
+| `payment_requested_at` | TIMESTAMPTZ | Explicit column, set on the `issued → payment_requested` transition (not derived from `updated_at`) |
 | `paid_at` | TIMESTAMPTZ | Set when `amount_paid == total` |
-| `voided_at`, `void_reason` | TIMESTAMPTZ / TEXT | |
 | `version` | INT NN DEFAULT 1 | Optimistic locking for payment confirmation |
+
+> **Stage 6 as implemented (23 Nov 2026):** the `voided_at` /
+> `void_reason` columns from the blueprint were NOT built — bill void
+> is owner-only and deferred to Stage 7, so no void columns or states
+> exist. `branch_id` and `table_id` were added (see rows above).
 
 UQ: `(restaurant_id, bill_number)`. Partial UQ: one open bill per session —
 `UQ (table_session_id) WHERE status IN ('issued','payment_requested')`
@@ -445,6 +452,7 @@ later amended.
 | `order_id` | UUID FK → orders.id | For traceability |
 | `item_name_snapshot` | TEXT NN | |
 | `variant_name_snapshot` | TEXT | |
+| `add_on_names_snapshot` | JSON NN | List of add-on names (JSON, following the order_items snapshot pattern) |
 | `unit_price_paise` | BIGINT NN | Copied from `order_items` |
 | `quantity` | INT NN | |
 | `line_total_paise` | BIGINT NN | Server-computed |
@@ -481,17 +489,28 @@ There is no guest-created payment row.
 | `bill_id` | UUID NN FK → bills.id | |
 | `bill_split_id` | UUID FK → bill_splits.id, nullable | Null = payment against the whole bill |
 | `method` | TEXT NN DEFAULT 'cash' | v1: `cash` only. Check constraint enforces it — adding a method is a migration + decision, not a string change. |
+| `idempotency_key` | TEXT NN | The request's `Idempotency-Key` header (required); replay key for the payment claim |
 | `amount_paise` | BIGINT NN CHECK (> 0) | Must be ≤ amount due on the bill/split (service-validated) |
-| `collected_by` | UUID NN FK → users.id | Who collected the cash |
+| `collected_by` | UUID NULL | Stage 6 decision 5: NULLABLE and always NULL — no users system yet, and the brief forbids inventing a staff identity. (The blueprint's NN FK → users.id is NOT built.) |
 | `collected_at` | TIMESTAMPTZ NN DEFAULT now() | |
-| `change_due_paise` | BIGINT NN DEFAULT 0 | Overpayment handling per D9 |
-| `status` | TEXT NN DEFAULT 'confirmed' | `confirmed` \| `refunded` \| `voided` — see § 6 |
-| `receipt_number` | TEXT UQ | Generated at confirmation, e.g. `R-…` |
+| `change_due_paise` | BIGINT NN DEFAULT 0 | Overpayment handling per D9 — always 0 in v1 (no change handling) |
+| `status` | TEXT NN DEFAULT 'confirmed' | `confirmed` ONLY in Stage 6 — `refunded`/`voided` states are NOT built (refunds deferred to Stage 7) |
+| `receipt_number` | TEXT NN | Generated at confirmation, e.g. `R-2026-11-23-001`. UQ **per restaurant** `(restaurant_id, receipt_number)` — the daily sequence restarts per restaurant, so the UQ is not global. |
+| `note` | TEXT | Optional waiter note recorded at confirmation |
 
 Indexes: `(bill_id)`, `(restaurant_id, collected_at)`, `(collected_by, collected_at)`.
 Check: `method = 'cash'`.
 
+> **Stage 6 as implemented (23 Nov 2026):** payments are append-only —
+> there is no update/delete code path for this table anywhere in the
+> app. The audit trail in this stage IS this table (timestamps, amounts,
+> receipt numbers, idempotency keys); there is no `audit_logs` table.
+
 ### 3.20 `refunds`
+
+> **NOT BUILT in Stage 6** — blueprint row only. Refunds need owner
+> authority (D3) and owner auth, which do not exist yet; deferred to
+> Stage 7 with bill void and the daily cash report.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -747,6 +766,75 @@ queued/preparing → cancelled   (authorised roles only, with reason)
 > their order's transition (see Orders above) or of a guest cancel
 > (placed → cancelled cancels the items too). No endpoint moves a
 > single item on its own.
+
+### Bills — `bills.status`
+
+```
+issued → payment_requested → paid
+issued → paid
+```
+
+> **Stage 6 as implemented (23 Nov 2026):** a bill is generated from
+> the session's non-cancelled orders (`POST /guest/bill`, status
+> `issued`). While `issued` its lines are RECOMPUTED from the
+> session's current non-cancelled orders on every bill fetch/request
+> (one transaction: replace that bill's `bill_items`, recompute
+> totals) — except a partially-paid `issued` bill, which does NOT
+> regenerate (money already collected), and a no-change regen does
+> not bump `version`. `issued → payment_requested` happens on the
+> guest's Pay by Cash (`PATCH /guest/bill/request-payment`, which
+> creates NO payment row); the bill is then FROZEN — new orders wait
+> for a later bill. `payment_requested → paid` (or `issued → paid`)
+> happens only through a staff cash confirmation
+> (`POST /staff/bills/:id/payments`); a `paid` bill is frozen forever,
+> and new orders after it go on a NEW bill containing only order items
+> not referenced by any existing `bill_item` for the session. There
+> are NO `voided`/`refunded` states in this stage (owner-only,
+> deferred to Stage 7). One open bill per session is enforced by the
+> partial unique index `UQ (table_session_id) WHERE status IN
+> ('issued','payment_requested')`. Session close after all bills are
+> paid is still deferred (Stage 5 deferred it, Stage 6 did not add
+> it).
+
+### Bill splits — `bill_splits.status`
+
+```
+unpaid → payment_requested → paid
+unpaid → paid
+```
+
+> **Stage 6 as implemented:** splits are created by the guest
+> (`POST /guest/bill/splits`, equal or custom, server-validated) and
+> replace existing UNPAID splits in one transaction; replacement is
+> refused (409) once any split is paid or `payment_requested`. Splits
+> on a `payment_requested` bill inherit `payment_requested`. A split
+> is `paid` when a staff payment covers its full amount; the bill is
+> `paid` when the whole bill (or all splits) are paid. Rule enforced
+> in service + test: `SUM(splits) = bills.total_paise` whenever
+> splits exist.
+
+### Payments — `payments.status`
+
+```
+confirmed   (only state in Stage 6)
+```
+
+> **Stage 6 as implemented:** a payment row is created ONLY by staff
+> confirming cash (`POST /staff/bills/:id/payments`), in ONE
+> transaction with the idempotency claim (Stage 3.2 pattern, scope
+> `(restaurant_id, bill_id, endpoint, key)`), the bill/split row lock
+> (taken BEFORE the claim insert — see `api-plan.md` § 7.2 for the
+> deadlock the other order caused), the amount validation
+> (`0 < amount ≤ due on target`, else 422), and the
+> `amount_paid_paise` update. The row is append-only: no
+> update/delete code path exists. `method` is CHECK-constrained to
+> `'cash'`; `collected_by` is NULL (always, until staff auth lands);
+> `change_due_paise` is always 0 (D9: no change handling in v1);
+> `receipt_number` is `R-YYYY-MM-DD-NNN`, sequential per restaurant
+> per day. A second confirmation for the same split with a NEW key
+> fails at the status guard (409, existing payment returned); the
+> same key + same body replays 201 with `Idempotency-Replayed: true`
+> and no WS event.
 
 ### Kitchen tickets — `kitchen_tickets.status`
 

@@ -230,19 +230,21 @@ export interface HelpCall {
 }
 
 /* ------------------------------------------------------------------ */
-/* Bills & splits (api-plan.md § 7) — cash only in v1                  */
+/* Bills & splits (api-plan.md § 7 as built in Stage 6) — cash only   */
 /* ------------------------------------------------------------------ */
 
-export type BillStatus =
-  | "issued"
-  | "payment_requested"
-  | "paid"
-  | "partially_paid"
-  | "voided";
+/** Bill statuses as built in Stage 6: issued | payment_requested |
+ * paid. There are no voided / refunded states in this stage
+ * (owner auth does not exist yet — deferred to Stage 7). */
+export type BillStatus = "issued" | "payment_requested" | "paid";
 
 export interface BillItem {
   id: string;
+  orderId?: string;
+  orderItemId?: string;
   name: string;
+  variantName?: string;
+  addOnNames?: string[];
   quantity: number;
   unitPricePaise: number;
   totalPaise: number;
@@ -250,25 +252,51 @@ export interface BillItem {
 
 export interface BillSplit {
   id: string;
-  label?: string;
+  label: string;
   amountPaise: number;
   status: "unpaid" | "payment_requested" | "paid";
+  paidAt?: string;
+}
+
+export interface BillPayment {
+  id: string;
+  billId: string;
+  billSplitId?: string;
+  method: "cash";
+  amountPaise: number;
+  changeDuePaise: number;
+  collectedBy: string | null;
+  collectedAt: string;
+  receiptNumber: string;
+  status: "confirmed";
+  note?: string;
 }
 
 export interface Bill {
   id: string;
+  billNumber: string;
   tableSessionId: string;
+  tableId: string;
+  tableNumber: number;
   status: BillStatus;
   items: BillItem[];
+  splits: BillSplit[];
+  payments: BillPayment[];
+  orderNumbers: string[];
   subtotalPaise: number;
-  /** Tax undecided (D1) — 0 until the backend configures it. */
+  /** Tax undecided (D1) — 0 until the backend configures it. The
+   * UI says "not configured", never "0% GST". */
   taxPaise: number;
+  serviceChargePaise: number;
+  discountPaise: number;
   totalPaise: number;
   amountPaidPaise: number;
-  splits?: BillSplit[];
-  receiptNumber?: string;
+  /** Outstanding = total − amount paid, server-computed. */
+  outstandingPaise: number;
   issuedAt: string;
+  paymentRequestedAt?: string;
   paidAt?: string;
+  version: number;
 }
 
 export type SplitMode = "equal" | "custom";
@@ -279,6 +307,29 @@ export interface BillSplitRequest {
   parts?: number;
   /** Custom mode: amounts in paise; must sum exactly to the bill total. */
   amountsPaise?: number[];
+}
+
+/** Receipt data (api-plan.md § 7.3 as built in Stage 6): JSON only,
+ * no PDF. Issued only after staff confirm the cash payment. */
+export interface Receipt {
+  restaurantName: string;
+  branchName?: string;
+  billNumber: string;
+  receiptNumber: string;
+  receiptNumbers: string[];
+  tableNumber: number;
+  orderNumbers: string[];
+  items: BillItem[];
+  subtotalPaise: number;
+  taxPaise: number;
+  taxStatus: string;
+  totalPaise: number;
+  amountReceivedPaise: number;
+  outstandingPaise: number;
+  paymentMethod: "Cash";
+  paymentTimestamps: string[];
+  receiptTimestamp?: string;
+  billId: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -392,13 +443,50 @@ export interface StaffHelpCall extends HelpCall {
 }
 
 /** Table detail (GET /staff/tables/:id): the grid row, the active
- * session (null when the table is free), that session's orders, and
- * its open/acknowledged help calls. */
+ * session (null when the table is free), that session's orders, its
+ * open/acknowledged help calls, and its open bill summary if one
+ * exists (Stage 6 — null when there is no open bill). */
 export interface StaffTableDetail {
   table: StaffTable;
   session: GuestSession | null;
   orders: KitchenOrder[];
   helpCalls: StaffHelpCall[];
+  openBill?: StaffBillSummary | null;
+}
+
+/** One row of GET /staff/bills (Stage 6): the queue needs the
+ * table, bill number, money, request time and order count. */
+export interface StaffBillSummary {
+  id: string;
+  billNumber: string;
+  tableId: string;
+  tableNumber: number;
+  tableSessionId: string;
+  status: BillStatus;
+  totalPaise: number;
+  amountPaidPaise: number;
+  outstandingPaise: number;
+  orderCount: number;
+  issuedAt: string;
+  paymentRequestedAt?: string;
+}
+
+export interface StaffBillListResponse {
+  data: StaffBillSummary[];
+  pagination: PaginationInfo;
+}
+
+/** POST /staff/bills/:id/payments response (Stage 6): the payment,
+ * the updated bill, and the receipt data once fully paid. */
+export interface StaffPaymentResult {
+  payment: BillPayment;
+  bill: Bill;
+  receipt: Receipt | null;
+}
+
+export interface StaffPaymentListResponse {
+  data: BillPayment[];
+  pagination: PaginationInfo;
 }
 
 export interface StaffTableListResponse {
@@ -428,6 +516,10 @@ export interface StaffEvent {
     | "help_call.opened"
     | "help_call.acknowledged"
     | "help_call.resolved"
+    | "bill.created"
+    | "bill.requested"
+    | "payment.recorded"
+    | "bill.paid"
     | string;
   restaurant_id: string;
   table_id: string | null;
@@ -438,6 +530,13 @@ export interface StaffEvent {
     table_number?: number;
     help_call_id?: string;
     type?: string;
+    bill_id?: string;
+    bill_number?: string;
+    payment_id?: string;
+    receipt_number?: string;
+    amount_paise?: number;
+    total_paise?: number;
+    outstanding_paise?: number;
   };
   version: number;
   occurred_at: string;

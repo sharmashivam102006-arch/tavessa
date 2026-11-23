@@ -10,6 +10,7 @@ from app.models.menu import ItemAddon, ItemVariant, MenuCategory, MenuItem  # no
 from app.models.order import Order, OrderItem, OrderItemAddon  # noqa: F401
 from app.models.support import HelpCall  # noqa: F401
 from app.models.idempotency import IdempotencyKey  # noqa: F401
+from app.models.billing import Bill, BillItem, BillSplit, Payment  # noqa: F401
 
 __all__ = [
     "Branch",
@@ -26,4 +27,8 @@ __all__ = [
     "OrderItemAddon",
     "HelpCall",
     "IdempotencyKey",
+    "Bill",
+    "BillItem",
+    "BillSplit",
+    "Payment",
 ]

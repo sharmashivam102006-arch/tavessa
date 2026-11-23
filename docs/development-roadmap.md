@@ -575,52 +575,144 @@ assigned tables, or all tables with assigned ones highlighted?).
 
 ---
 
-## Stage 6 — Billing and cash payments
+## Stage 6 — Billing and cash payments ✅ COMPLETE (23 Nov 2026)
 
-**Goal:** bills, splits, cash-payment requests, staff-confirmed collection,
-receipts, refunds, and the daily cash report — with the cash-only rule
-enforced by the API, not by the UI.
+**Goal (as built):** bills, splits, cash-payment requests, staff-confirmed
+collection and receipts — with the cash-only rule enforced by the API, not
+by the UI. Refunds, bill void, the daily cash report and owner
+bills/payments history are DEFERRED (see decisions below): they need owner
+auth, which does not exist yet. No `audit_logs` table: the payments table
+itself is the audit trail (append-only rows, never updated/deleted).
 
-**Work:**
+**Built:**
 
-- [ ] Backend: bill generation (snapshot bill items, server totals), bill
-  status machine, equal/custom splits (remainder rule, sum validation),
-  `payment_requested`, payment confirmation (row lock + status guard +
-  audit + receipt number), receipt data, refunds (owner only), daily cash
-  report, bill void (owner, audited).
-- [ ] Frontend (guest): bill view, split UI (equal/custom), "Pay by Cash"
-  request, payment confirmation + receipt view (shown only after staff
-  confirmation).
-- [ ] Frontend (staff): bill-request list, cash-collection confirmation
-  screen (amount validated against the bill/split, collector recorded),
-  receipt view.
-- [ ] Frontend (owner): bills/payments history, cash report.
-- [ ] Rules to finalise in this stage (record in `project-overview.md` § 4
-  if they change): bill-after-more-orders (regenerate vs second bill),
-  overpayment/change handling (D9), refund limits (D3).
+- Backend: `bills` / `bill_items` / `bill_splits` / `payments` models +
+  one Alembic migration (`a0f6368eca02`, revises `3a1b7c9d4e2f`);
+  `idempotency_keys.table_session_id` made nullable + `bill_id` /
+  `payment_id` columns for payment claims (partial UQ per bill scope).
+  Bill numbers `B-YYYY-MM-DD-NNN`, receipt numbers `R-YYYY-MM-DD-NNN`,
+  sequential per restaurant per day under the restaurant row lock.
+  Bill calculation server-side only, integer paise, from order-item
+  snapshots (never current menu price/name); client price fields → 422.
+  Cash payment in ONE transaction reusing the Stage 3.2 claim pattern,
+  scope `(restaurant_id, bill_id, endpoint, key)`; the bill row is locked
+  BEFORE the claim insert (a claim INSERT takes a `FOR KEY SHARE` lock
+  on the bill via the `bill_id` FK, which deadlocked against `FOR UPDATE`
+  — found by the Postgres concurrency test, fixed by lock ordering).
+- Frontend (guest): `BillPage` rewritten onto the live API (no sample-data
+  fallback): itemised bill, split UI (equal/custom, server authoritative),
+  Pay by Cash → `payment_requested`, receipt view after paid, help link.
+  Refetches on focus + after actions + 10s interval while unpaid.
+- Frontend (staff): Billing section in `StaffPage` — pending queue
+  (`payment_requested` first), bill detail + payment history, two-step
+  cash collection (amount prefilled with outstanding, validated ≤ due,
+  confirm panel shows the exact amount), receipt after confirmation,
+  open-bill summary in table detail. Demo mode `?demo=1` with separate
+  sample bills. The queue drops paid bills itself (the list endpoint
+  also returns paid bills for a future history view).
 
-**Decisions needed:** D1 (tax — final), D2 (discounts), D3 (refund authority),
-D9 (split remainder + change).
+**Recorded scope decisions (brief governs over the blueprint):**
+
+1. DEFERRED: refunds (need D3 owner authority), bill void (owner only),
+   daily cash report, owner bills/payments history UI, `audit_logs` table.
+2. SPLITS ARE IN: equal (parts ≥ 2, remainder 1p to earliest parts) and
+   custom (amounts sum exactly to total, each > 0, else 422). No splits =
+   one whole-bill target; with splits = paid split-by-split.
+3. EVENT NAMES use the brief's list: `bill.created`, `bill.requested`,
+   `payment.recorded`, `bill.paid`. The blueprint's `bill.payment_requested`
+   / `payment.confirmed` are NOT used.
+4. NO audit_logs table — the audit trail is the append-only `payments`
+   table (timestamps, amounts, receipt numbers, idempotency keys).
+5. `collected_by` is NULLABLE and always NULL (no users system; the brief
+   forbids inventing staff identity). Same for any actor field.
+6. OVERPAYMENT / CHANGE (D9): no change handling in v1. Amount must be
+   > 0 and ≤ outstanding on its target, else 422. `change_due_paise` is
+   always 0. D9 still open for change handling.
+7. TAX (D1) UNDECIDED, not invented. Bills carry subtotal, tax = 0,
+   service charge = 0, discount = 0, total = subtotal. Bill and receipt
+   show tax as explicitly "not configured" (never "0% GST", never
+   "tax-inclusive", never a GSTIN). Later: a restaurant-level tax config
+   (rate, inclusive/exclusive, effective date) snapshotted onto the bill
+   at issue time, with a migration. The 0 must not be read as a 0% rule.
+8. BILL REGENERATION: while `issued`, lines are recomputed from the
+   session's current non-cancelled orders on every fetch/request (one
+   transaction); a partially-paid `issued` bill does NOT regenerate
+   (money already collected); a no-change regen does NOT bump `version`.
+   Once `payment_requested` the bill is FROZEN; a `paid` bill is frozen
+   forever. New orders after a paid bill go on a NEW bill containing only
+   items not referenced by any existing `bill_item` for the session. A
+   guest cancellation after billing is reflected by the lazy regen.
+9. GUEST LIVE UPDATES via REST refetch. Bill/payment WS events go to the
+   STAFF channel only; the guest WS channel is Stage 8.
+
+**Deviations found while building (recorded, not silent):**
+
+- A guest token on `POST /staff/bills/:id/payments` returns **401**
+  (missing staff key), not the 403 the brief stated: the Stage 4/5 dev
+  gate returns 401 for a missing key; a kitchen key sent *as* the staff
+  key → 403. Tested as such.
+- Receipt-number uniqueness is per restaurant `(restaurant_id,
+  receipt_number)`, not global — the `R-YYYY-MM-DD-NNN` sequence
+  restarts per restaurant per day.
+- `payment_requested_at` is an explicit column on `bills` (not derived
+  from `updated_at`).
+- The staff bills list returns paid bills too (filterable by `status`);
+  the frontend queue drops them. The queue's "Issued" label previously
+  mislabelled a paid bill — caught by the live screenshot, fixed by the
+  queue-side filter + a test.
+- Full-suite fixes (test infrastructure, no behaviour change): the
+  slowapi limiter is disabled for the SQLite suite in `tests/conftest.py`
+  (the whole suite shares one TestClient IP and the 60/min order cap was
+  exhausted by legitimate test traffic — 429 cascade; no test asserts
+  rate-limit behaviour); the billing isolation test deletes its second
+  restaurant in a `finally` (same pattern as kitchen/staff); the kitchen
+  list helper fetches `per_page=100` (the shared DB now holds >20 active
+  orders, so a just-placed order fell off page 1).
+
+**Decisions still open:** D1 (tax — undecided), D2 (discounts), D3 (refund
+authority — now needed by Stage 7, not Stage 6), D9 (change handling;
+split remainder decided: remainder 1p to earliest parts).
+
+**Verification (23 Nov 2026):**
+
+- Backend: `tests/test_billing.py` 36 passed (SQLite) +
+  `tests/test_billing_concurrency.py` 3 passed (real Postgres, 8-way:
+  same key → 1 payment; overpaying keys → total never exceeded; 8 × 1/8
+  → all 201, bill paid). Full backend suite: **126 passed, 1 skipped**.
+  Frontend: **84 passed** (was 70), `npm run build` clean.
+- Migration verified on real PostgreSQL (pgserver): upgrade to head,
+  downgrade −1 (billing tables gone, Zaika data preserved), re-upgrade.
+- Live Postgres verification: 34/34 checks — seed Zaika, Table 5 order
+  (Butter Chicken + 2× Butter Naan, ₹447.00) → kitchen ready → staff
+  serve → guest bill (totals from snapshots) → menu price +₹100 change
+  leaves the bill unchanged → Pay by Cash creates no payment row →
+  staff lists pending bill → staff confirms cash (receipt
+  `R-2026-11-23-001`, `collected_by` null, change 0) → WS
+  `payment.recorded` + `bill.paid` received → second confirmation 409 →
+  guest + staff receipts 200. Screenshots in
+  `docs/stage6-screenshots/` (guest bill live, guest receipt live, staff
+  queue, staff cash-confirmation, staff demo, guest bill mobile).
 
 **Acceptance criteria:**
 
-- [ ] A guest tapping "Pay by Cash" does **not** mark anything paid
+- [x] A guest tapping "Pay by Cash" does **not** mark anything paid
   (negative test: bill stays `payment_requested`, no payment row exists).
-- [ ] Staff confirmation creates exactly one payment, marks the bill/split
-  paid, generates a receipt, and writes an audit row.
-- [ ] A second confirmation for the same split fails (`409`) and returns the
+- [x] Staff confirmation creates exactly one payment, marks the bill/split
+  paid, generates a receipt. (Audit row: deferred per decision 4 — the
+  payments row IS the audit record.)
+- [x] A second confirmation for the same split fails (`409`) and returns the
   existing payment.
-- [ ] Equal split of an odd-paise total sums exactly to the total; custom
+- [x] Equal split of an odd-paise total sums exactly to the total; custom
   splits that do not sum are rejected (`422`).
-- [ ] A bill's total does not change when a menu price changes after the
+- [x] A bill's total does not change when a menu price changes after the
   order (snapshot test).
-- [ ] The daily cash report reconciles: collected = sum of confirmed
-  payments; outstanding = issued/requested bills not yet paid.
-- [ ] A refund (owner only) adjusts payment + bill status and is audited; a
-  waiter attempting a refund gets `403`.
+- [ ] The daily cash report reconciles — DEFERRED (needs owner auth).
+- [ ] A refund (owner only) adjusts payment + bill status and is audited —
+  DEFERRED (needs D3 owner authority).
 
-**Exit gate:** golden-path steps 12–18 work live, including a real cash
-handover at the table and a receipt the guest can see.
+**Exit gate:** golden-path steps 12–18 work live — verified 23 Nov 2026
+(see the live check above; the receipt the guest sees is the rendered
+receipt view, and the cash handover itself is a human step at the table).
 
 ---
 
@@ -789,15 +881,15 @@ not architectural); domain + TLS; Postgres backup schedule.
 
 | # | Decision | Needed by |
 |---|---|---|
-| D1 | Tax: GST-inclusive vs exclusive, service charge, rounding | Stage 3 / 6 |
+| D1 | Tax: GST-inclusive vs exclusive, service charge, rounding | STILL OPEN — Stage 6 shipped with tax "not configured" (see Stage 6 decisions); a restaurant-level tax config is a future stage, not Stage 6 |
 | D2 | Discounts / complimentary items | Stage 6 |
-| D3 | Refund authority + limits | Stage 6 |
+| D3 | Refund authority + limits | Stage 7 (owner auth) — refunds deferred out of Stage 6 |
 | D4 | QR printing (format, size, who prints) | Stage 2 |
 | D5 | Table session expiry + close rules | Stage 2 |
 | D6 | Review moderation (immediate vs held, editable?) | Stage 2 / 7 |
 | D7 | KDS hardware + offline fallback | Stage 4 |
 | D8 | Order cancellation window | Stage 3 |
-| D9 | Split remainder + overpayment/change | Stage 6 |
+| D9 | Split remainder + overpayment/change | Split remainder DECIDED in Stage 6 (1p to earliest parts); change handling STILL OPEN (no change in v1) |
 | D10 | Zaika seed values (tables, stations, hours, settings) | Stage 1 |
 
 Record each answer in the doc that owns it (tax in `project-overview.md` § 4

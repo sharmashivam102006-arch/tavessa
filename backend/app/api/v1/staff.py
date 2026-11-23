@@ -24,12 +24,21 @@ broadcast only AFTER the service has committed (architecture.md
 """
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db, require_staff_dev_access
+from app.core.errors import ApiError
 from app.core.rate_limit import STAFF_PATCH_LIMIT, limiter
 from app.realtime.manager import manager
+from app.schemas.billing import (
+    BillDataResponse,
+    PaymentCreateRequest,
+    ReceiptDataResponse,
+    StaffBillListResponse,
+    StaffPaymentListResponse,
+)
 from app.schemas.staff import (
     StaffHelpCallDataResponse,
     StaffHelpCallListResponse,
@@ -39,7 +48,7 @@ from app.schemas.staff import (
     StaffTableDetailResponse,
     StaffTableListResponse,
 )
-from app.services import staff_service
+from app.services import billing_service, staff_service
 from app.services.kitchen_service import resolve_restaurant
 
 router = APIRouter(
@@ -143,6 +152,137 @@ def list_staff_help_calls(
     restaurant = resolve_restaurant(db, restaurant_id)
     return staff_service.list_help_calls(
         db, restaurant.id, status, page, per_page
+    )
+
+
+# --- Billing (Stage 6, api-plan.md § 7 as built) ------------------------
+# Same dev-only gate as the rest of this router (production -> 503).
+# Cash only: there is no guest endpoint that creates a payment, and
+# a guest table token on these paths is a 401 (no staff key) — the
+# dev gate runs before any billing logic. Broadcast-after-commit:
+# payment.recorded on every new payment, bill.paid as well when the
+# bill is fully paid. A replay broadcasts NOTHING (no new payment).
+
+
+@router.get("/staff/bills", response_model=StaffBillListResponse)
+def list_staff_bills(
+    restaurant_id: UUID | None = Query(default=None),
+    status: str | None = Query(default=None),
+    table_id: UUID | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Bill queue: payment_requested first, then issued, newest
+    first. Each row carries table, bill number, totals, outstanding
+    and request time."""
+    restaurant = resolve_restaurant(db, restaurant_id)
+    return billing_service.list_bills(
+        db, restaurant.id, status, table_id, page, per_page
+    )
+
+
+@router.get("/staff/bills/{bill_id}", response_model=BillDataResponse)
+def get_staff_bill(
+    bill_id: UUID,
+    restaurant_id: UUID | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Full bill: items, splits, payment history, totals,
+    outstanding, table/session info. Unknown id or wrong
+    restaurant -> 404."""
+    restaurant = resolve_restaurant(db, restaurant_id)
+    return BillDataResponse(
+        data=billing_service.get_staff_bill(db, restaurant.id, bill_id)
+    )
+
+
+@router.post("/staff/bills/{bill_id}/payments", status_code=201)
+@limiter.limit(STAFF_PATCH_LIMIT)
+async def record_staff_payment(
+    request: Request,
+    bill_id: UUID,
+    body: PaymentCreateRequest,
+    restaurant_id: UUID | None = Query(default=None),
+    db: Session = Depends(get_db),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> JSONResponse:
+    """Confirm cash collection for a bill (or one split). Cash only:
+    ``method`` is not accepted from the client except as 'cash'
+    (anything else is a 422 at the schema). ``Idempotency-Key`` is
+    REQUIRED (missing -> 422). Same key + same body replays the
+    original payment (``Idempotency-Replayed: true``); same key +
+    different body -> 422; a second confirmation for the same split
+    with a NEW key -> 409 with the existing payment."""
+    if not idempotency_key:
+        raise ApiError(
+            422,
+            "idempotency_key_required",
+            "Idempotency-Key header is required for payment confirmation.",
+            {"field": "Idempotency-Key"},
+        )
+    restaurant = resolve_restaurant(db, restaurant_id)
+    response_body, status, replayed, event = billing_service.record_payment(
+        db, restaurant.id, bill_id, body, idempotency_key
+    )
+    if event is not None:
+        await manager.broadcast(
+            restaurant.id,
+            "payment.recorded",
+            event["table_id"],
+            {
+                "bill_id": event["bill_id"],
+                "bill_number": event["bill_number"],
+                "payment_id": event["payment_id"],
+                "receipt_number": event["receipt_number"],
+                "amount_paise": event["amount_paise"],
+                "bill_status": event["bill_status"],
+            },
+        )
+        if event["fully_paid"]:
+            await manager.broadcast(
+                restaurant.id,
+                "bill.paid",
+                event["table_id"],
+                {
+                    "bill_id": event["bill_id"],
+                    "bill_number": event["bill_number"],
+                    "receipt_number": event["receipt_number"],
+                    "amount_paise": event["amount_paise"],
+                },
+            )
+    headers = {"Idempotency-Replayed": "true"} if replayed else {}
+    return JSONResponse(content=response_body, status_code=status, headers=headers)
+
+
+@router.get(
+    "/staff/bills/{bill_id}/payments", response_model=StaffPaymentListResponse
+)
+def list_staff_bill_payments(
+    bill_id: UUID,
+    restaurant_id: UUID | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Payment history for a bill, newest first."""
+    restaurant = resolve_restaurant(db, restaurant_id)
+    return billing_service.list_staff_payments(
+        db, restaurant.id, bill_id, page, per_page
+    )
+
+
+@router.get("/staff/bills/{bill_id}/receipt", response_model=ReceiptDataResponse)
+def get_staff_bill_receipt(
+    bill_id: UUID,
+    restaurant_id: UUID | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Receipt data — only after the bill is paid, else 409
+    ``receipt_not_available``."""
+    restaurant = resolve_restaurant(db, restaurant_id)
+    return ReceiptDataResponse(
+        data=billing_service.get_staff_receipt(db, restaurant.id, bill_id)
     )
 
 

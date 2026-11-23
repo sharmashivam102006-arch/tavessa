@@ -16,6 +16,7 @@ from datetime import datetime
 from uuid import UUID
 
 from app.schemas.common import CamelModel, Pagination
+from app.schemas.billing import StaffBillSummaryOut
 from app.schemas.guest import HelpCallOut
 from app.schemas.kitchen import KitchenOrderOut, KitchenRestaurantOut
 
@@ -52,12 +53,14 @@ class StaffTableListResponse(CamelModel):
 
 class StaffTableDetailOut(CamelModel):
     """A selected table: its floor-grid row, its active session's
-    orders (full snapshots, most recent first), and its
-    open/acknowledged help calls."""
+    orders (full snapshots, most recent first), its
+    open/acknowledged help calls, and its open bill summary if one
+    exists (Stage 6 — None when the table has no open bill)."""
 
     table: StaffTableOut
     orders: list[KitchenOrderOut]
     help_calls: list["StaffHelpCallOut"]
+    open_bill: "StaffBillSummaryOut | None" = None
 
 
 class StaffTableDetailResponse(CamelModel):

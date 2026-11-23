@@ -46,6 +46,7 @@ from app.schemas.staff import (
     StaffTableDetailOut,
     StaffTableOut,
 )
+from app.services import billing_service
 from app.services.kitchen_service import (
     ACTIVE_ORDER_STATUSES,
     _kitchen_out,
@@ -227,6 +228,11 @@ def get_table_detail(
         table=_table_out(db, table, session),
         orders=orders,
         help_calls=help_calls,
+        open_bill=(
+            billing_service.open_bill_summary(db, session.id)
+            if session is not None
+            else None
+        ),
     )
 
 

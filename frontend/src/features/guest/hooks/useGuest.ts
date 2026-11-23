@@ -23,6 +23,7 @@ import {
   fetchGuestMenu,
   fetchGuestOrder,
   fetchGuestOrders,
+  fetchGuestReceipt,
   fetchGuestSession,
 } from "@/features/guest/api/guestApi";
 import {
@@ -147,6 +148,25 @@ export function useGuestBill(tableToken: string) {
     queryFn: () => fetchGuestBill(tableToken),
     retry: false,
     staleTime: 15_000,
+    // Guest bill updates arrive via REST refetch (Stage 6 decision
+    // 9 — the guest WS channel is Stage 8): re-fetch on focus and
+    // on a short interval while the bill is unpaid, so a staff
+    // confirmation shows up without a manual refresh. Once paid,
+    // the bill never changes again and polling stops.
+    refetchInterval: (query) =>
+      query.state.data?.data?.status === "paid" ? false : 10_000,
+  });
+}
+
+/** Receipt data for the paid bill. Only enabled once the bill is
+ * paid — before that the endpoint 409s, so the hook stays idle. */
+export function useGuestReceipt(tableToken: string, billPaid: boolean) {
+  return useQuery({
+    queryKey: ["guest-receipt", tableToken],
+    queryFn: () => fetchGuestReceipt(tableToken),
+    retry: false,
+    staleTime: 60_000,
+    enabled: billPaid,
   });
 }
 

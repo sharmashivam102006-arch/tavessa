@@ -13,6 +13,11 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_db, get_guest_context
 from app.core.rate_limit import SESSION_OPEN_LIMIT, limiter
 from app.realtime.manager import manager
+from app.schemas.billing import (
+    BillDataResponse,
+    ReceiptDataResponse,
+    SplitCreateRequest,
+)
 from app.schemas.guest import (
     GuestMenuResponse,
     GuestSessionResponse,
@@ -21,7 +26,7 @@ from app.schemas.guest import (
     OrderDataResponse,
     OrderListResponse,
 )
-from app.services import help_service, order_service, table_service
+from app.services import billing_service, help_service, order_service, table_service
 from app.services.table_service import GuestContext
 
 router = APIRouter(tags=["guest"])
@@ -98,3 +103,95 @@ async def create_help_call(
         },
     )
     return result
+
+
+# --- Billing (Stage 6, api-plan.md § 7 as built) ------------------------
+# Guest bill endpoints are scoped by the QR token like every other
+# guest endpoint: another session's bill is a 404, not a 403.
+# Broadcast-after-commit (architecture.md § 3.2): bill.created only
+# when a NEW bill was generated, bill.requested only on the actual
+# issued -> payment_requested transition — an idempotent repeat
+# broadcasts nothing. No guest endpoint creates a payment row.
+
+
+@router.post("/guest/bill", response_model=BillDataResponse, status_code=200)
+async def guest_create_bill(
+    ctx: GuestContext = Depends(get_guest_context),
+    db: Session = Depends(get_db),
+) -> BillDataResponse:
+    """Create-or-retrieve the session's bill. A new bill broadcasts
+    ``bill.created`` after commit; a regenerated / returned open
+    bill does not (it already exists)."""
+    bill, created = billing_service.get_or_create_bill(db, ctx)
+    if created:
+        await manager.broadcast(
+            ctx.restaurant.id,
+            "bill.created",
+            ctx.session.table_id,
+            {
+                "bill_id": str(bill.id),
+                "bill_number": bill.bill_number,
+                "status": bill.status,
+                "table_number": ctx.table.number,
+                "total_paise": bill.total_paise,
+            },
+        )
+    return BillDataResponse(data=bill)
+
+
+@router.get("/guest/bill", response_model=BillDataResponse)
+def guest_get_bill(
+    ctx: GuestContext = Depends(get_guest_context),
+    db: Session = Depends(get_db),
+) -> BillDataResponse:
+    """The session's open bill (regenerated if issued), else the most
+    recent paid bill; none -> 404 ``bill_not_found``."""
+    return BillDataResponse(data=billing_service.get_bill_for_guest(db, ctx))
+
+
+@router.patch("/guest/bill/request-payment", response_model=BillDataResponse)
+async def guest_request_payment(
+    ctx: GuestContext = Depends(get_guest_context),
+    db: Session = Depends(get_db),
+) -> BillDataResponse:
+    """Guest taps "Pay by Cash": issued -> payment_requested. This
+    creates NO payment row. Already payment_requested -> 200
+    idempotent return; paid -> 409."""
+    bill, transitioned = billing_service.request_payment(db, ctx)
+    if transitioned:
+        await manager.broadcast(
+            ctx.restaurant.id,
+            "bill.requested",
+            ctx.session.table_id,
+            {
+                "bill_id": str(bill.id),
+                "bill_number": bill.bill_number,
+                "status": bill.status,
+                "table_number": ctx.table.number,
+                "total_paise": bill.total_paise,
+                "outstanding_paise": bill.outstanding_paise,
+            },
+        )
+    return BillDataResponse(data=bill)
+
+
+@router.post("/guest/bill/splits", response_model=BillDataResponse)
+def guest_create_splits(
+    body: SplitCreateRequest,
+    ctx: GuestContext = Depends(get_guest_context),
+    db: Session = Depends(get_db),
+) -> BillDataResponse:
+    """Equal / custom splits, validated server-side. Replaces
+    existing unpaid splits; refused once a split is paid or
+    payment_requested (409)."""
+    return BillDataResponse(data=billing_service.create_splits(db, ctx, body))
+
+
+@router.get("/guest/bill/receipt", response_model=ReceiptDataResponse)
+def guest_get_receipt(
+    ctx: GuestContext = Depends(get_guest_context),
+    db: Session = Depends(get_db),
+) -> ReceiptDataResponse:
+    """Receipt data — only after the bill is paid, else 409
+    ``receipt_not_available``."""
+    return ReceiptDataResponse(data=billing_service.get_receipt_for_guest(db, ctx))

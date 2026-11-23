@@ -8,12 +8,17 @@
  * "staff access not configured" state — never a stack trace.
  * In production these endpoints return 503 until staff auth lands.
  */
-import { api } from "@/shared/api/client";
+import { api, createIdempotencyKey } from "@/shared/api/client";
 import type {
+  Bill,
   KitchenOrder,
+  Receipt,
+  StaffBillListResponse,
   StaffHelpCall,
   StaffHelpCallListResponse,
   StaffOrderListResponse,
+  StaffPaymentListResponse,
+  StaffPaymentResult,
   StaffRestaurant,
   StaffTableDetailResponse,
   StaffTableListResponse,
@@ -118,6 +123,75 @@ export function resolveHelpCall(callId: string, restaurantId: string) {
   return api.patch<{ data: StaffHelpCall }>(
     `${V1}/staff/help-calls/${encodeURIComponent(callId)}/resolve?restaurant_id=${encodeURIComponent(restaurantId)}`,
     {},
+    { headers: staffHeaders() },
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Billing (Stage 6: GET /staff/bills, cash confirmation, receipts)   */
+/* ------------------------------------------------------------------ */
+
+/** The bill queue (GET /staff/bills): payment_requested first,
+ * then issued, newest first. */
+export function fetchStaffBills(
+  restaurantId: string,
+  status?: "issued" | "payment_requested" | "paid",
+  page = 1,
+  perPage = 20,
+) {
+  const params = new URLSearchParams({
+    restaurant_id: restaurantId,
+    page: String(page),
+    per_page: String(perPage),
+  });
+  if (status) params.set("status", status);
+  return api.get<StaffBillListResponse>(`${V1}/staff/bills?${params}`, {
+    headers: staffHeaders(),
+  });
+}
+
+/** One bill in full (GET /staff/bills/:id): items, splits, payment
+ * history, totals, outstanding. */
+export function fetchStaffBill(restaurantId: string, billId: string) {
+  return api.get<{ data: Bill }>(
+    `${V1}/staff/bills/${encodeURIComponent(billId)}?restaurant_id=${encodeURIComponent(restaurantId)}`,
+    { headers: staffHeaders() },
+  );
+}
+
+/** Confirm cash collection (POST /staff/bills/:id/payments).
+ * Cash only. The idempotency key is generated per confirmation
+ * ATTEMPT and reused across retries of the same attempt, so a
+ * double-tap or a flaky retry cannot create two payments. */
+export function recordStaffPayment(
+  restaurantId: string,
+  billId: string,
+  body: { amountPaise: number; billSplitId?: string; note?: string },
+  idempotencyKey: string = createIdempotencyKey(),
+) {
+  return api.post<{ data: StaffPaymentResult }>(
+    `${V1}/staff/bills/${encodeURIComponent(billId)}/payments?restaurant_id=${encodeURIComponent(restaurantId)}`,
+    body,
+    {
+      headers: { ...staffHeaders(), "Idempotency-Key": idempotencyKey },
+    },
+  );
+}
+
+/** Payment history for a bill, newest first
+ * (GET /staff/bills/:id/payments). */
+export function fetchStaffBillPayments(restaurantId: string, billId: string) {
+  return api.get<StaffPaymentListResponse>(
+    `${V1}/staff/bills/${encodeURIComponent(billId)}/payments?restaurant_id=${encodeURIComponent(restaurantId)}`,
+    { headers: staffHeaders() },
+  );
+}
+
+/** Receipt data (GET /staff/bills/:id/receipt). Only after the bill
+ * is paid — otherwise a 409. */
+export function fetchStaffBillReceipt(restaurantId: string, billId: string) {
+  return api.get<{ data: Receipt }>(
+    `${V1}/staff/bills/${encodeURIComponent(billId)}/receipt?restaurant_id=${encodeURIComponent(restaurantId)}`,
     { headers: staffHeaders() },
   );
 }
