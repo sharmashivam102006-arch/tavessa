@@ -14,18 +14,19 @@ The first demonstration restaurant is **Zaika**. The architecture is SaaS-ready:
 every tenant-scoped record belongs to a restaurant, so a second restaurant can be
 added without a schema redesign.
 
-> **Status: Stage 2 complete (frontend) — 23 Nov 2026.** Blueprint + project foundation
+> **Status: Stage 3 complete (guest backend) — 23 Nov 2026.** Blueprint + project foundation
 > are done and verified (see "Development setup" below). Stage 2 built the
 > guest interface & digital menu for Zaika as a frontend against the API
-> contract in `docs/api-plan.md`, using clearly-marked sample menu data —
-> no guest/menu/order/help/bill endpoints exist on the backend yet, so every
-> write action honestly reports "not yet connected" and no order, help
-> request or payment is faked. The backend half of Stage 2 (tables, menu,
-> orders) is deferred to Stage 3, per the Stage 2 instruction. No business
-> features exist yet beyond the guest UI — staff/kitchen/admin are route
-> shells only. Do not treat any endpoint, screen, or workflow in these docs
-> as shipped until its stage in `docs/development-roadmap.md` is marked
-> complete and verified.
+> contract in `docs/api-plan.md`, using clearly-marked sample menu data.
+> Stage 3 wired the guest backend behind it: PostgreSQL models + migration,
+> Zaika seed (6 categories, 24 items), QR-token sessions, menu, orders
+> (server-priced, idempotent), help calls — all verified live against a
+> real PostgreSQL. The sample menu is now used only for the `/t/demo`
+> preview; real table tokens use the real API. Staff/kitchen/admin are
+> still route shells only, and there are no bills, payments, reviews,
+> WebSocket, or staff login yet (Stages 4–8). Do not treat any endpoint,
+> screen, or workflow in these docs as shipped until its stage in
+> `docs/development-roadmap.md` is marked complete and verified.
 
 ## Development setup
 
@@ -51,11 +52,63 @@ createdb tavessa              # then keep DATABASE_URL in .env as the default
 cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-alembic upgrade head          # no business migrations yet in Stage 1
+alembic upgrade head          # creates the Stage 3 guest tables
+python -m app.seed.zaika      # idempotent Zaika seed: 1 restaurant, 10 tables,
+                              # 6 categories, 24 items (safe to re-run)
+python -m app.seed.demo_tokens --table 5   # dev-only demo QR token (refuses
+                              # in production); prints http://localhost:5173/t/<token>
+                              # ONCE — the raw token is stored only as a hash.
+                              # Demo tokens expire in 30 days (provisional, D5).
 uvicorn app.main:app --reload --port 8000
 # Health: curl http://localhost:8000/api/v1/health
 # Docs:   http://localhost:8000/docs (dev only)
 ```
+
+#### Trying the guest endpoints (dev)
+
+Generate a demo token first (see above — never commit a token), then:
+
+```bash
+TOKEN=<token printed by demo_tokens>   # e.g. for Table 5
+# Open the session (creates/resumes it; returns the restaurant + table)
+curl http://localhost:8000/api/v1/guest/t/$TOKEN
+# {"session":{"id":"…","restaurantId":"…","tableId":"…","tableNumber":5,
+#   "status":"active","openedAt":"…"},
+#  "restaurant":{"id":"…","name":"Zaika","tagline":"…","cuisine":"…",
+#   "address":"12, MG Road, Bengaluru","openingHours":"…",
+#   "phone":"+91 98765 43210","rating":4.6},
+#  "table":{"number":5},"menuUrl":"/t/<token>"}
+
+# Menu (needs the token header)
+curl -H "X-Table-Token: $TOKEN" http://localhost:8000/api/v1/guest/menu
+# {"categories":[{"id":"…","name":"Starters","sortOrder":1,"isActive":true}, …],
+#  "items":[{"id":"…","categoryId":"…","name":"Old Delhi Butter Chicken",
+#   "pricePaise":34900,"isVeg":false,"isAvailable":true, …}]}
+
+# Place an order — prices are recomputed server-side; never send prices.
+# ITEM_ID is the menu item's UUID from the menu response.
+curl -X POST http://localhost:8000/api/v1/orders \
+  -H "X-Table-Token: $TOKEN" -H "Idempotency-Key: <uuid>" \
+  -H "Content-Type: application/json" \
+  -d '{"items":[{"menuItemId":"<ITEM_ID>","quantity":1}]}'
+# 201 {"order":{"id":"…","orderNumber":"ZAIKA-0001","status":"placed",
+#   "items":[…],"subtotalPaise":34900,"taxPaise":0,"totalPaise":34900, …}}
+# Repeating the same request with the same Idempotency-Key returns the
+# same order with header `Idempotency-Replayed: true` — no duplicate.
+
+# Help call (one open call per session; second → 409)
+curl -X POST http://localhost:8000/api/v1/guest/help-calls \
+  -H "X-Table-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"water"}'
+# 201 {"data":{"id":"…","type":"water","status":"open", …}}
+```
+
+Unknown token → `401 {"error":{"code":"invalid_table_token",…}}`;
+revoked/expired token → `410 {"error":{"code":"session_expired",…}}`;
+another session's order → `404` (not `403`).
+Tests: `pytest -q` in `backend/` (SQLite in-memory; 37 passed / 1 skipped
+in Stage 3) — plus a real-Postgres check via `alembic upgrade head`
+against a local PostgreSQL before claiming the migration works.
 
 ### Frontend
 

@@ -1,14 +1,15 @@
 /** TanStack Query hooks for the guest interface.
  *
- * The backend guest endpoints do not exist yet (Stage 3). Every hook
- * therefore has an explicit fallback contract, and the UI labels
- * sample data as sample data:
+ * Stage 3: the backend guest endpoints exist. Real tokens use the real
+ * API and surface errors to the UI — there is no silent sample fallback
+ * for a normal token. The labelled Zaika sample dataset is kept ONLY
+ * for the `/t/demo` preview (tableToken === "demo").
  * - useGuestSession: retry:false. On failure the UI renders the
  *   invalid/expired/not-connected state mapped from the error —
  *   never a fake verified session.
- * - useGuestMenu: tries GET /guest/menu; when the endpoint is
- *   unavailable it falls back to the clearly-marked Zaika SAMPLE
- *   dataset, and returns `isSample: true` so the UI can say so.
+ * - useGuestMenu: tries GET /guest/menu; only the demo token falls
+ *   back to the labelled sample menu (`isSample: true`). Any other
+ *   token returns an empty menu plus the error, so the UI can say so.
  * - useGuestOrders / useGuestOrder / useGuestBill: no fallback —
  *   orders and bills must never be invented. On failure the UI shows
  *   the not-connected state.
@@ -16,7 +17,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { ApiError, mapSessionError, type SessionErrorKind } from "@/shared/api/client";
-import type { GuestMenuResponse } from "@/shared/api/types";
+import type { GuestMenuResponse, MenuItem } from "@/shared/api/types";
 import {
   fetchGuestBill,
   fetchGuestMenu,
@@ -24,7 +25,18 @@ import {
   fetchGuestOrders,
   fetchGuestSession,
 } from "@/features/guest/api/guestApi";
-import { ZAIKA_CATEGORIES, ZAIKA_MENU_ITEMS, ZAIKA_RESTAURANT } from "@/features/guest/data/zaika-menu";
+import {
+  ZAIKA_CATEGORIES,
+  ZAIKA_MENU_ITEMS,
+  ZAIKA_RESTAURANT,
+  findMenuItem,
+} from "@/features/guest/data/zaika-menu";
+
+/** True only for the labelled demo preview — the one token allowed to
+ * use the sample dataset. */
+export function isDemoToken(tableToken: string): boolean {
+  return tableToken === "demo";
+}
 
 export interface GuestSessionState {
   data?: Awaited<ReturnType<typeof fetchGuestSession>>;
@@ -48,8 +60,9 @@ export function useGuestSession(tableToken: string): GuestSessionState {
 
 export interface GuestMenuState {
   menu: GuestMenuResponse;
-  /** True when the menu is the labelled Zaika sample dataset because
-   * GET /guest/menu is not available yet. */
+  /** True only for the /t/demo preview, where the menu is the
+   * labelled Zaika sample dataset. False for every real token —
+   * a failed menu fetch for a real token is an error, not a sample. */
   isSample: boolean;
   isPending: boolean;
   error?: ApiError;
@@ -66,16 +79,44 @@ export function useGuestMenu(tableToken: string): GuestMenuState {
   if (query.data) {
     return { menu: query.data, isSample: false, isPending: false };
   }
-  // Endpoint unavailable (404 — not implemented yet — or backend
-  // unreachable): fall back to the labelled sample menu.
+  if (isDemoToken(tableToken)) {
+    // Demo preview only: the labelled sample menu.
+    return {
+      menu: {
+        categories: ZAIKA_CATEGORIES,
+        items: ZAIKA_MENU_ITEMS,
+      },
+      isSample: true,
+      isPending: query.isPending,
+      error: query.error instanceof ApiError ? query.error : undefined,
+    };
+  }
+  // Real token, menu unavailable: no silent fallback — surface the error.
   return {
-    menu: {
-      categories: ZAIKA_CATEGORIES,
-      items: ZAIKA_MENU_ITEMS,
-    },
-    isSample: true,
+    menu: { categories: [], items: [] },
+    isSample: false,
     isPending: query.isPending,
     error: query.error instanceof ApiError ? query.error : undefined,
+  };
+}
+
+/** Resolve a cart line's menu item id to its MenuItem, from the real
+ * menu when loaded, from the sample dataset only for the demo token.
+ * (Cart lines store backend UUIDs for real tokens; the sample
+ * `findMenuItem` only knows the demo ids.) */
+export function useMenuItemLookup(
+  tableToken: string,
+): (id: string) => MenuItem | undefined {
+  const query = useQuery({
+    queryKey: ["guest-menu", tableToken],
+    queryFn: () => fetchGuestMenu(tableToken),
+    retry: false,
+    staleTime: 60_000,
+  });
+  return (id: string) => {
+    if (query.data) return query.data.items.find((item) => item.id === id);
+    if (isDemoToken(tableToken)) return findMenuItem(id);
+    return undefined;
   };
 }
 
@@ -109,13 +150,16 @@ export function useGuestBill(tableToken: string) {
   });
 }
 
-/** Restaurant info for the header/hero. Sample data until the session
- * endpoint verifies the real restaurant (Stage 3). */
+/** Restaurant info for the header/hero. Real data once the session
+ * endpoint verifies it; the sample restaurant only for /t/demo.
+ * `restaurant` is undefined for a real token whose session has not
+ * verified yet — callers must handle that (MenuPage shows the
+ * not-verified banner). */
 export function useGuestRestaurant(tableToken: string) {
   const session = useGuestSession(tableToken);
   return {
-    restaurant: session.data?.restaurant ?? ZAIKA_RESTAURANT,
-    isSample: !session.data,
+    restaurant: session.data?.restaurant ?? (isDemoToken(tableToken) ? ZAIKA_RESTAURANT : undefined),
+    isSample: isDemoToken(tableToken) && !session.data,
     isPending: session.isPending,
     errorKind: session.errorKind,
   };

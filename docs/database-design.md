@@ -3,6 +3,17 @@
 > Status: Blueprint v1 — 23 Nov 2026. No application code built yet.
 > Companion docs: `project-overview.md`, `architecture.md`, `api-plan.md`,
 > `development-roadmap.md`.
+>
+> **Stage 3 implementation status (23 Nov 2026):** the following
+> tables are implemented, migrated (`9cd1cf3c6050`) and verified
+> against real PostgreSQL: `restaurants`, `branches`,
+> `dining_tables`, `table_tokens`, `table_sessions`,
+> `menu_categories`, `menu_items`, `item_variants`,
+> `item_add_ons`, `orders`, `order_items`, `order_item_add_ons`,
+> `help_calls`, `idempotency_keys`. NOT yet implemented (later
+> stages): `users`, `staff_assignments`, `kitchen_stations`,
+> `kitchen_tickets`, `bills`, `bill_items`, `bill_splits`,
+> `payments`, `refunds`, `reviews`, `notifications`, `audit_logs`.
 
 ## 1. Principles
 
@@ -159,6 +170,13 @@ UQ: `(restaurant_id, branch_id, number)`. Indexes: `(restaurant_id, status)`.
 Indexes: `token_hash` (UQ), `(table_id, is_active)`.
 Rule: at most one active token per table — enforced by a partial unique index
 `UQ (table_id) WHERE is_active` (Stage 2 implementation).
+> **Stage 3 as built (23 Nov 2026):** tokens carry a `status` column
+> (`active` | `revoked` | `expired`) instead of the `is_active`
+> boolean above, plus `last_used_at`; expiry is `status = 'expired'`
+> OR `expires_at` passed. The partial unique index is
+> `UQ (table_id) WHERE status = 'active'`. `revoked_at`/`created_by`
+> are not stored (rotation is a dev CLI in Stage 3; the admin
+> rotate endpoint lands in Stage 7).
 
 ### 3.6 `table_sessions` — one visit at a table
 
@@ -233,6 +251,17 @@ variant queries always join through the item and check its restaurant.
 
 ### 3.10 `add_ons` and 3.11 `item_add_ons`
 
+> **Stage 3 scoping choice (23 Nov 2026, recorded):** the catalogue +
+> join split below is NOT what was built. The Zaika demo data defines
+> add-ons **per item** (same name repeated with per-item ids, no shared
+> catalogue id in the frontend contract), so Stage 3 stores one
+> `item_add_ons` row scoped to `(restaurant_id, menu_item_id)` with
+> `slug` unique per item, carrying `name` + `price_paise` itself
+> (`app/models/menu.py: ItemAddon`). No separate `add_ons` catalogue
+> table exists. If a shared catalogue is ever needed, it is a
+> migration that adds `add_ons` and re-points these rows — the wire
+> shape (`id`, `name`, `pricePaise`, `isAvailable`) does not change.
+
 `add_ons` is the catalogue (e.g. `Extra Cheese`, `Extra Raita`); `item_add_ons`
 is the many-to-many join saying which add-ons a given item offers, with a
 per-item price (the same add-on can cost differently on different items).
@@ -306,6 +335,13 @@ restaurant + number, so the service must include the date in the number or use
 a daily sequence — Stage 3 implementation detail, recorded here so it is not
 discovered late: **use a per-restaurant daily sequence table or a
 `order_number` that embeds the date**).
+> **Stage 3 decision (23 Nov 2026):** the daily reset was NOT built.
+> Order numbers are a per-restaurant running sequence that never
+> resets, format `<SLUG>-0001` (e.g. `ZAIKA-0001`), allocated under a
+> row lock on the restaurant row (`order_service._next_order_number`).
+> The `(restaurant_id, order_number)` uniqueness is the source of
+> truth. A daily reset, if ever wanted, is a service change, not a
+> schema change.
 Indexes: `(restaurant_id, status)`, `(table_session_id, placed_at)`,
 `(restaurant_id, placed_at)`.
 
@@ -336,6 +372,14 @@ Indexes: `(order_id)`, `(station_id, status)`, `(order_id, station_id)`.
 Check: `line_total_paise = (unit_price_paise + add_ons_total_paise) * quantity`
 — enforced in the service and asserted in tests; a DB generated column is an
 acceptable alternative, decided in Stage 3.
+> **Stage 3 as built (23 Nov 2026):** add-ons are NOT a JSONB snapshot
+> on this row. Each chosen add-on is an `order_item_add_ons` row
+> (`order_item_id`, `add_on_id`, `name_snapshot`, `price_paise`), and
+> `unit_price_paise` is the per-unit price **including** variant delta
+> + add-ons, so `total_paise = unit_price_paise × quantity`.
+> `station_id` is not a column in Stage 3 — the item's station is
+> plain text on `menu_items.station`; `kitchen_stations` lands in
+> Stage 4.
 
 ### 3.15 `kitchen_tickets` — one per order × station
 

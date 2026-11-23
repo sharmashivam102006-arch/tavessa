@@ -6,7 +6,7 @@ import type { MenuItem } from "@/shared/api/types";
 import { formatINR } from "@/shared/utils/money";
 import { priceForConfiguration } from "@/features/guest/lib/pricing";
 import { useCartStore, type CartLine } from "@/features/guest/stores/cartStore";
-import { findMenuItem } from "@/features/guest/data/zaika-menu";
+import { useMenuItemLookup } from "@/features/guest/hooks/useGuest";
 import { FoodImage } from "@/features/guest/components/FoodImage";
 import { ItemDetailSheet } from "@/features/guest/components/ItemDetailSheet";
 import { QuantityStepper } from "@/features/guest/components/QuantityStepper";
@@ -35,6 +35,7 @@ export function CartPage() {
   const setQuantity = useCartStore((s) => s.setQuantity);
   const removeLine = useCartStore((s) => s.removeLine);
   const clear = useCartStore((s) => s.clear);
+  const findMenuItem = useMenuItemLookup(tableToken);
   const estimatedSubtotal = useCartStore((s) => s.estimatedSubtotal(findMenuItem));
   const [editing, setEditing] = useState<{ item: MenuItem; line: CartLine } | null>(null);
 
@@ -145,10 +146,9 @@ export function CartPage() {
           </div>
         </dl>
         <p className="mt-3 text-xs leading-relaxed text-stone-500">
-          This is an estimate from the sample menu. The final payable
-          amount is calculated and validated by the backend when the order
-          is placed — the prices you see here are never the billing
-          authority.
+          This is an estimate from the menu. The final payable amount is
+          calculated and validated by the backend when the order is placed
+          — the prices you see here are never the billing authority.
         </p>
         <Button asChild size="lg" className="mt-4 w-full">
           <Link to={`/t/${tableToken}/review`}>

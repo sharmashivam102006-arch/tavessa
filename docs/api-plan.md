@@ -8,9 +8,39 @@
 
 - **Base URL:** `/api/v1` (versioned from day one; unversioned routes do not exist).
 - **Format:** JSON everywhere. `Content-Type: application/json`.
-- **Money:** integer paise in every request and response (`total_paise`,
-  `unit_price_paise`, …). No floats, no decimal strings. The frontend formats
+- **Money:** integer paise in every request and response (`totalPaise`,
+  `unitPricePaise`, …). No floats, no decimal strings. The frontend formats
   paise for display only.
+- **Wire naming (Stage 3 reconciliation, 23 Nov 2026):** guest endpoints
+  are **camelCase** on the wire, matching the Stage 2 frontend types in
+  `frontend/src/shared/api/types.ts` field-for-field (`orderNumber`,
+  `tableSessionId`, `subtotalPaise`, `pricePaise`, `isVeg`, `sortOrder`,
+  `openedAt`, `placedAt`, …). The snake_case field names in the examples
+  in this document are superseded for guest endpoints — the Pydantic
+  schemas (camelCase aliases, `populate_by_name`) are the source of
+  truth, and `GET /openapi.json` shows the actual wire names. The one
+  exception is the list pagination object, which stays snake_case
+  exactly as specified: `{ "page": 1, "per_page": 20, "total": 57,
+  "total_pages": 3 }`. Errors keep the existing envelope
+  `{ "error": { "code", "message", "details" } }`.
+- **Response shapes (Stage 3):** session/menu/order-placement are
+  **bare** (`{ "session", "restaurant", "table", "menuUrl" }`,
+  `{ "categories", "items" }`, `{ "order" }`); single-resource reads
+  and actions use `{ "data": … }` (`GET /guest/orders/:id`,
+  `POST /orders/:id/cancel`, `POST /guest/help-calls`); lists use
+  `{ "data": […], "pagination": {…} }` (`GET /guest/orders`).
+- **Status/type values (Stage 3 reconciliation):** all statuses and
+  the help-call type are **lowercase** on the wire. Mapping from the
+  brief's UPPERCASE names:
+
+  | Entity | UPPERCASE (brief) | Wire (lowercase) |
+  |---|---|---|
+  | Order | PLACED, ACCEPTED, COOKING, READY, SERVED, CANCELLED | `placed`, `accepted`, `preparing`, `ready`, `served`, `cancelled` (+ `completed`, staff-side, not a guest step) |
+  | Order item | PENDING, ACCEPTED, PREPARING, READY, SERVED, CANCELLED | `queued`, `accepted`, `preparing`, `ready`, `served`, `cancelled` |
+  | Help call type | — | `waiter`, `water`, `plates`, `order_help` (input is case-insensitive; `plates_cutlery` is accepted as an alias for `plates`; always returned lowercase) |
+
+  Stored as TEXT with CHECK constraints (keeps SQLite test parity
+  with PostgreSQL).
 - **IDs:** UUID strings.
 - **Timestamps:** ISO 8601 UTC (`2026-11-23T15:00:00Z`).
 - **Auth:**
@@ -54,6 +84,15 @@ attempts per IP+email in 15 minutes, `429` (rate limit).
 
 ## 3. Guest — table sessions & menu
 
+> **Stage 3 status (23 Nov 2026): implemented and verified** —
+> `GET /guest/t/:tableToken`, `GET /guest/session`, `GET /guest/menu`
+> (with `?categoryId=` and `?search=`), `POST /guest/help-calls`
+> (see § 5). `GET /guest/menu/categories/:id/items` and
+> `POST /guest/session/close` are NOT implemented in Stage 3.
+> Demo QR tokens expire in **30 days — provisional, pending D5**
+> (session/token expiry). Guest cancellation is **only while the
+> order status is `placed` — D8 still open**.
+
 Guest endpoints are scoped by the QR token. The token is validated on every
 call; the restaurant and table are derived from it, never from a client
 -supplied `restaurant_id` or `table_id`.
@@ -66,11 +105,28 @@ call; the restaurant and table are derived from it, never from a client
 | `GET /guest/menu/categories/:id/items` | `X-Table-Token` | Optional per-category fetch; the full menu call is the default. |
 | `POST /guest/session/close` | `X-Table-Token` | Guest-initiated close (only when no unpaid bill — else `409`). Staff can also close (see § 5). |
 
-Guest token errors: unknown/revoked token → `401` (`invalid_table_token`);
-expired session → `410` (`session_expired`); a token for another table used
-against a session-scoped path → `403`.
+Guest token errors: unknown token → `401` (`invalid_table_token`);
+revoked or expired token → `410` (`session_expired`) — Stage 3
+reconciliation: the blueprint's "revoked → 401" is superseded; revoked
+and expired are both `410` because the frontend maps 401 to
+"invalid QR" and 410 to "session expired". A token for another table
+used against a session-scoped path → `404` (not `403`) for guest
+order reads, per § 11 (no existence leakage).
 
 ## 4. Orders
+
+> **Stage 3 status (23 Nov 2026): guest half implemented and
+> verified** — `POST /orders` (idempotent, server-priced),
+> `GET /guest/orders`, `GET /guest/orders/:id`,
+> `POST /orders/:id/cancel` (guest, only while `placed`, else `409`).
+> Staff `GET /orders`, `PATCH /orders/:id/status` and item-status
+> endpoints are NOT in Stage 3 (Stages 4–5). No `PATCH` status
+> endpoint exists yet; status transitions are enforced by a
+> transition map in `order_service` and the only guest transition is
+> cancel-from-placed. Order numbers are per-restaurant running
+> numbers, format `ZAIKA-0001` (slug upper-cased + zero-padded
+> sequence, allocated under a row lock on the restaurant). Tax is 0
+> (D1 undecided — no rate invented).
 
 ### 4.1 Placement — the idempotent endpoint
 
@@ -94,6 +150,11 @@ Content-Type: application/json
 ```
 
 **Server behaviour (all in one transaction):**
+> Wire note (Stage 3): the request body on the wire is camelCase —
+> `{ "items": [{ "menuItemId": "…", "variantId": "…", "addOnIds": ["…"],
+> "quantity": 2, "specialInstructions": "less spicy" }] }` — and any
+> price/total field in the body is rejected with `422` (the schema
+> forbids extra fields), not silently ignored.
 
 1. Resolve the session from the token; reject if the session is not `active`.
 2. Validate every item exists, belongs to this restaurant, is available;
@@ -117,10 +178,10 @@ per-item details (`{ "field": "items[1].variant_id", "code": "invalid_variant" }
 |---|---|---|
 | `GET /orders` | JWT (waiter/kitchen/owner) | List for the caller's restaurant. Filters: `status`, `table_id`, `session_id`, `from`, `to`. Sorted `placed_at desc` by default. |
 | `GET /orders/:id` | JWT or guest (own session) | Full order with items, ticket statuses, bill link if any. Guest: only if the order belongs to their session, else `403`. |
-| `GET /guest/orders` | `X-Table-Token` | Orders for this session (active + recent). |
-| `GET /guest/orders/:id` | `X-Table-Token` | One order of this session, for live tracking. |
-| `PATCH /orders/:id/status` | JWT (kitchen/owner; waiter for `served` only) | Body `{ "status": "accepted" \| "preparing" \| "ready" \| "served" \| "completed" \| "cancelled", "reason": "…" }`. Transition validated against the machine (`database-design.md` § 6); illegal → `409`. Sets the matching `*_at` timestamp. |
-| `POST /orders/:id/cancel` | JWT or guest (own session, before `accepted` — per D8) | Body `{ "reason": "…" }`. Cancels the order and its non-served items; recomputes totals; if a bill already exists, the bill must be regenerated (Stage 6 rule). |
+| `GET /guest/orders` | `X-Table-Token` | Orders for this session (active + recent). **Stage 3: implemented** — `{ "data": […], "pagination": { "page", "per_page", "total", "total_pages" } }`, `placed_at` desc. |
+| `GET /guest/orders/:id` | `X-Table-Token` | One order of this session, for live tracking. **Stage 3: implemented** — another session's order → `404`. |
+| `PATCH /orders/:id/status` | JWT (kitchen/owner; waiter for `served` only) | Body `{ "status": "accepted" \| "preparing" \| "ready" \| "served" \| "completed" \| "cancelled", "reason": "…" }`. Transition validated against the machine (`database-design.md` § 6); illegal → `409`. Sets the matching `*_at` timestamp. **Not in Stage 3** (Stage 4). |
+| `POST /orders/:id/cancel` | JWT or guest (own session, before `accepted` — per D8) | Body `{ "reason": "…" }`. Cancels the order and its non-served items; recomputes totals; if a bill already exists, the bill must be regenerated (Stage 6 rule). **Stage 3: guest cancel implemented — only while `placed` (D8 still open), else `409`; cancels its items too, same transaction.** |
 | `PATCH /orders/:orderId/items/:itemId/status` | JWT (kitchen/owner; waiter for `served` only) | Body `{ "status": "preparing" \| "ready" \| "served" \| "cancelled", "reason": "…" }`. Item transition; order + ticket statuses recomputed in the same transaction; `order.item_ready` / `order.ready` events published after commit. |
 
 **Status-transition rule:** the backend is the only authority. A request to
@@ -137,7 +198,7 @@ the response, computed server-side).
 | `GET /tables/:id` | JWT (waiter/owner) | Table + active session + its orders + its open bill. |
 | `PATCH /tables/:id/status` | JWT (waiter/owner) | `{ "status": "cleaning" \| "available" \| "out_of_service" }`. `occupied` is system-set, not manually settable (except by owner override — audited, Stage 5). |
 | `POST /tables/:id/close-session` | JWT (waiter/owner) | Close the active session (only when no unpaid bill — else `409` with the bill id). Sets table `cleaning`. |
-| `POST /guest/help-calls` | `X-Table-Token` | `{ "note": "…" }`. One open call per session (second call → `409` with the existing call). Publishes `help_call.opened`. |
+| `POST /guest/help-calls` | `X-Table-Token` | **Stage 3: implemented.** Body `{ "type": "waiter" \| "water" \| "plates" \| "order_help", "note": "…" }` — type is case-insensitive, `plates_cutlery` is an alias for `plates`. One open/acknowledged call per session (second call → `409` with the existing call id in `error.details`). Status starts `open`; nothing claims a waiter has accepted it. |
 | `GET /help-calls` | JWT (waiter/owner) | Filters: `status`, `table_id`, `assigned_to=me`. |
 | `GET /help-calls/:id` | JWT | One call. |
 | `PATCH /help-calls/:id/accept` | JWT (waiter/owner) | Assigns to the caller, `open → acknowledged`. Publishes `help_call.acknowledged`. |
@@ -314,6 +375,14 @@ All events use the envelope in `architecture.md` § 6.1
 - On `version` gap within a channel: re-fetch that channel's state.
 
 ## 10. Idempotency (§ 7 of the brief — the contract)
+
+> **Stage 3 status (23 Nov 2026): implemented as specified, verified
+> live and in tests.** `POST /orders` only. The idempotency record is
+> stored **after** the order transaction commits; a replay returns
+> the stored response verbatim with the original status and header
+> `Idempotency-Replayed: true`. Rate limits (slowapi, per IP):
+> `GET /guest/t/:tableToken` 120/minute, `POST /orders` 60/minute —
+> generous caps to blunt brute force / abuse, not to police guests.
 
 - **Where:** `POST /orders` only in v1. The client generates a UUID
   `Idempotency-Key` per placement attempt and reuses it on retry.

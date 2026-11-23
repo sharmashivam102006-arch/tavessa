@@ -35,7 +35,17 @@ alembic upgrade head
 ```
 
 Migrations live in `alembic/versions/`. No schema change without a migration.
-Business models land in Stage 3 — Stage 1 ships no business tables.
+Stage 3 ships one migration (`9cd1cf3c6050`): the guest domain tables
+(restaurants, branches, dining tables, QR tokens, sessions, menu,
+orders, help calls, idempotency keys).
+
+## Seed & demo tokens (Stage 3)
+
+```bash
+python -m app.seed.zaika                  # idempotent Zaika seed (safe to re-run)
+python -m app.seed.demo_tokens --table 5   # dev-only QR token; prints the guest
+                                           # URL once; refuses in production
+```
 
 ## Tests
 
@@ -44,8 +54,8 @@ pytest -q
 ```
 
 Tests run against in-memory SQLite (the one exception to the
-Postgres-only rule) so the suite runs anywhere. Postgres-specific tests
-arrive with the business schema in Stage 3.
+Postgres-only rule) so the suite runs anywhere. Stage 3: 37 passed /
+1 skipped. Postgres-specific tests arrive with the business schema in Stage 3.
 
 `tests/test_postgres_smoke.py` is skipped by default; it verifies a real
 Postgres with `SELECT 1` and needs the `pgserver` package

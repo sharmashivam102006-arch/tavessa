@@ -10,6 +10,9 @@ the choice is real code, not a comment.
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
+import hashlib
+import secrets
+
 _hasher = PasswordHasher()
 
 
@@ -27,3 +30,18 @@ def verify_password(password: str, password_hash: str) -> bool:
     except Exception:
         # A malformed stored hash must never authenticate.
         return False
+
+
+# --- QR table tokens (Stage 3) -------------------------------------------
+# Opaque random tokens, hashed at rest with SHA-256. The raw token is
+# shown exactly once (at creation, for QR printing) and never stored
+# or logged.
+
+def generate_table_token() -> str:
+    """A fresh raw QR token (URL-safe, ~43 chars, 256 bits of entropy)."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_table_token(raw_token: str) -> str:
+    """SHA-256 hex of the raw token — the only form ever stored."""
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()

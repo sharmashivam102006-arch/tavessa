@@ -21,8 +21,12 @@ import { cn } from "@/lib/utils";
  *   labelled sample menu stays browsable. */
 export function MenuPage() {
   const { tableToken = "" } = useParams<{ tableToken: string }>();
-  const { menu, isSample } = useGuestMenu(tableToken);
+  const { menu, isSample, error: menuError } = useGuestMenu(tableToken);
   const { restaurant, errorKind } = useGuestRestaurant(tableToken);
+  // No verified session yet: the hero shows the restaurant name only;
+  // the banner below says the table is not verified. Field fallbacks
+  // to the known Zaika details fill in fields the backend omits.
+  const hero = restaurant ?? { name: "Zaika" };
   const [query, setQuery] = useState("");
   const [vegOnly, setVegOnly] = useState(false);
   const [activeCategory, setActiveCategory] = useState(menu.categories[0]?.id ?? "");
@@ -100,26 +104,26 @@ export function MenuPage() {
             className="h-full w-full"
           />
           <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-5 pb-4 pt-10">
-            <h1 className="text-3xl font-semibold tracking-tight">{restaurant.name}</h1>
-            <p className="mt-0.5 text-sm text-stone-200">{restaurant.tagline ?? ZAIKA_RESTAURANT.tagline}</p>
+            <h1 className="text-3xl font-semibold tracking-tight">{hero.name}</h1>
+            <p className="mt-0.5 text-sm text-stone-200">{restaurant?.tagline ?? ZAIKA_RESTAURANT.tagline}</p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-5 py-3 text-xs text-stone-200">
           <span className="inline-flex items-center gap-1">
             <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" />
-            {restaurant.rating ?? "—"} · {restaurant.cuisine ?? ZAIKA_RESTAURANT.cuisine}
+            {restaurant?.rating ?? "—"} · {restaurant?.cuisine ?? ZAIKA_RESTAURANT.cuisine}
           </span>
           <span className="inline-flex items-center gap-1">
             <Clock className="h-3.5 w-3.5" />
-            {restaurant.openingHours ?? ZAIKA_RESTAURANT.openingHours}
+            {restaurant?.openingHours ?? ZAIKA_RESTAURANT.openingHours}
           </span>
           <span className="inline-flex items-center gap-1">
             <MapPin className="h-3.5 w-3.5" />
-            {restaurant.address ?? ZAIKA_RESTAURANT.address}
+            {restaurant?.address ?? ZAIKA_RESTAURANT.address}
           </span>
           <span className="inline-flex items-center gap-1">
             <Phone className="h-3.5 w-3.5" />
-            {restaurant.phone ?? ZAIKA_RESTAURANT.phone}
+            {restaurant?.phone ?? ZAIKA_RESTAURANT.phone}
           </span>
         </div>
       </section>
@@ -128,16 +132,23 @@ export function MenuPage() {
       {errorKind === "not_connected" ? (
         <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           <strong>Table not verified yet.</strong> The session endpoint (
-          <code className="text-xs">GET /guest/t/:tableToken</code>) is not
-          available — the backend adds it in Stage 3. You are browsing the
-          sample menu; no table has been verified.
+          <code className="text-xs">GET /guest/t/:tableToken</code>) did not
+          answer — check the backend is running and scan the QR code again.
+          No table has been verified.
+        </div>
+      ) : null}
+      {menuError && !isSample ? (
+        <div className="mt-4 rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800">
+          <strong>Couldn&apos;t load the menu.</strong> The backend answered{" "}
+          {menuError.status} ({menuError.code}). Try reloading — your table
+          session is still valid.
         </div>
       ) : null}
       {isSample ? (
         <div className="mt-4 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-600">
           <strong>Sample menu.</strong> Demo data for Zaika — prices shown
-          are for browsing only. The real menu loads from the backend in
-          Stage 3, and final prices are always calculated by the backend.
+          are for browsing only. Final prices are always calculated by the
+          backend.
         </div>
       ) : null}
 

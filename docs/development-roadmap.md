@@ -28,7 +28,7 @@
 | 0 | Blueprint (this document set) | **Done — 23 Nov 2026** |
 | 1 | Project foundation & architecture | **Done — 23 Nov 2026, verified (see Stage 1 report below)** |
 | 2 | Guest interface & QR ordering | **Done (frontend) — 23 Nov 2026, verified (see Stage 2 report below).** Guest UI built against the api-plan.md contract with labelled Zaika sample data; backend half of Stage 2 (tables/menu/orders endpoints) deferred to Stage 3 per the Stage 2 instruction. |
-| 3 | Backend APIs & database integration | Not started |
+| 3 | Backend APIs & database integration | **Done (guest scope) — 23 Nov 2026, verified (see Stage 3 report below).** Guest backend only: models/migrations/seed, QR sessions, menu, orders, help calls. The roadmap's original Stage 3 scope (auth, staff/kitchen/admin endpoints, bills, reviews, audit) was narrowed by the Stage 3 instruction to the guest domain — the rest stays open and moves to Stages 4–7. |
 | 4 | Kitchen Display System | Not started |
 | 5 | Waiter / Staff dashboard | Not started |
 | 6 | Billing & cash payments | Not started |
@@ -200,6 +200,48 @@ live on two devices (phone + laptop).
 ---
 
 ## Stage 3 — Backend APIs and database integration
+
+**Status: Done (guest scope) — 23 Nov 2026 (verified).** Models +
+migration + Zaika seed for the guest domain: restaurants, branches,
+dining tables 1–10, QR tokens (SHA-256 hashed, never stored raw),
+table sessions (one active per table), 6 categories + 24 menu items
+with exact demo prices/variants/add-ons (31 variants, 22 add-ons,
+2 sold out), orders + order items + per-item add-on snapshots,
+help calls, idempotency keys. Guest endpoints live:
+`GET /guest/t/:token` (401 unknown / 410 revoked-or-expired),
+`GET /guest/session`, `GET /guest/menu` (`?categoryId=`,
+`?search=`), `POST /orders` (server-recomputed prices, required
+`Idempotency-Key`, replay returns the stored response with
+`Idempotency-Replayed: true`, same key + different body → 422),
+`GET /guest/orders` (paginated), `GET /guest/orders/:id`
+(cross-table → 404), `POST /orders/:id/cancel` (only while
+`placed`, else 409), `POST /guest/help-calls` (one open call per
+session, second → 409; `plates_cutlery` alias accepted, always
+returned as `plates`). Wire format is camelCase per the Stage 3
+reconciliation (see `api-plan.md` § 1); statuses are lowercase
+(`placed`/`accepted`/`preparing`/…; item `queued`/`preparing`/…);
+tax stays 0 (D1 undecided); order numbers are `ZAIKA-0001` running
+numbers; demo tokens expire in 30 days (provisional, D5 open).
+Frontend: sample-menu/restaurant fallback now applies ONLY to the
+`/t/demo` preview — real tokens use the real API and surface errors;
+cart/review/layout resolve lines from the fetched menu (UUID ids);
+OrderReviewPage clears the cart only after a confirmed 201 and
+reuses the same idempotency key on retry. Verified: backend
+`pytest` **37 passed / 1 skipped**, frontend Vitest **32 passed**,
+`npm run build` clean, `alembic upgrade head` + downgrade/upgrade
+cycle on a real PostgreSQL (pgserver), seed CLI run twice with
+identical counts, live API check (health ok; session open; menu;
+real order `ZAIKA-0001`, subtotal/total 59800 paise for 2× Half
+butter chicken + gravy; replay returns the same order with the
+replayed header; invalid token 401; revoked token 410), and a Vite
+dev-server smoke (guest page 200, `/api/v1/health` proxied ok).
+**Still open (needs later stages, named):** staff/JWT auth and all
+staff/kitchen/admin endpoints, kitchen tickets + status transitions
+(Stage 4), bills/payments/splits/reviews (Stage 6), WebSocket
+(Stage 8), tax decision D1, session-expiry decision D5, guest
+cancel window D8. BillPage still resolves cart lines from the
+sample dataset — its Stage 6 wiring will switch it to the real
+menu/bill.
 
 **Goal:** the full backend domain surface from `api-plan.md`, with the whole
 schema migrated and the golden path working end-to-end through REST.

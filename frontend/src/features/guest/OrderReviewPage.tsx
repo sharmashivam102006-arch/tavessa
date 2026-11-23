@@ -6,7 +6,7 @@ import { ApiError, createIdempotencyKey } from "@/shared/api/client";
 import { formatINR } from "@/shared/utils/money";
 import { placeOrder } from "@/features/guest/api/guestApi";
 import { useCartStore } from "@/features/guest/stores/cartStore";
-import { findMenuItem } from "@/features/guest/data/zaika-menu";
+import { useMenuItemLookup } from "@/features/guest/hooks/useGuest";
 import { priceForConfiguration } from "@/features/guest/lib/pricing";
 import { BackendNotConnected, EmptyState } from "@/features/guest/components/states";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,7 @@ export function OrderReviewPage() {
   const navigate = useNavigate();
   const lines = useCartStore((s) => s.lines);
   const clear = useCartStore((s) => s.clear);
+  const findMenuItem = useMenuItemLookup(tableToken);
   const estimatedSubtotal = useCartStore((s) => s.estimatedSubtotal(findMenuItem));
   const [placing, setPlacing] = useState(false);
   const [placeError, setPlaceError] = useState<ApiError | null>(null);
@@ -46,7 +47,9 @@ export function OrderReviewPage() {
   }
 
   const handlePlaceOrder = async () => {
-    const key = createIdempotencyKey();
+    // Reuse the same key on retry of this attempt, so a retry can never
+    // create a duplicate order (the backend replays the first one).
+    const key = idempotencyKey ?? createIdempotencyKey();
     setIdempotencyKey(key);
     setPlacing(true);
     setPlaceError(null);

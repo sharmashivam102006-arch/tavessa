@@ -47,12 +47,21 @@ def register_error_handlers(app: FastAPI) -> None:
     async def _validation_error(
         _request: Request, exc: RequestValidationError
     ) -> JSONResponse:
+        # Pydantic puts the raw exception object in each error's ctx,
+        # which is not JSON-serialisable — stringify ctx values.
+        errors = []
+        for err in exc.errors():
+            err = dict(err)
+            ctx = err.get("ctx")
+            if isinstance(ctx, dict):
+                err["ctx"] = {k: str(v) for k, v in ctx.items()}
+            errors.append(err)
         return JSONResponse(
             status_code=422,
             content=error_body(
                 "validation_failed",
                 "Request validation failed.",
-                {"errors": exc.errors()},
+                {"errors": errors},
             ),
         )
 

@@ -2,9 +2,8 @@ import { useEffect } from "react";
 import { Link, Outlet, useLocation, useParams } from "react-router";
 import { Bell, ShoppingBag, UtensilsCrossed } from "lucide-react";
 
-import { useGuestSession } from "@/features/guest/hooks/useGuest";
+import { useGuestSession, useMenuItemLookup } from "@/features/guest/hooks/useGuest";
 import { useCartStore } from "@/features/guest/stores/cartStore";
-import { findMenuItem } from "@/features/guest/data/zaika-menu";
 import { formatINR } from "@/shared/utils/money";
 import { Button } from "@/components/ui/button";
 
@@ -21,6 +20,7 @@ export function GuestLayout() {
   const session = useGuestSession(tableToken);
   const setTableToken = useCartStore((s) => s.setTableToken);
   const itemCount = useCartStore((s) => s.itemCount());
+  const findMenuItem = useMenuItemLookup(tableToken);
   const estimatedSubtotal = useCartStore((s) => s.estimatedSubtotal(findMenuItem));
 
   useEffect(() => {
