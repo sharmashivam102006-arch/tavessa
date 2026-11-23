@@ -604,16 +604,31 @@ separate, owner-approved archival operation, not a row delete.
 |---|---|---|
 | `id` | UUID PK | |
 | `restaurant_id` | UUID NN FK | |
+| `table_session_id` | UUID NN FK → table_sessions.id | **Stage 3.1:** scope column — a key is per-session |
 | `key` | TEXT NN | Client-supplied `Idempotency-Key` header |
 | `endpoint` | TEXT NN | e.g. `POST /api/v1/orders` |
 | `request_hash` | TEXT NN | Hash of the canonical request body — a replay with a different body is a `422`, not a replay |
-| `response_status` | INT | Stored response status |
-| `response_body` | JSONB | Stored response, returned verbatim on replay |
-| `order_id` | UUID FK → orders.id, nullable | Convenience link for order placement |
+| `response_status` | INT | Stored response status (NULL while the claim is pending) |
+| `response_body` | JSONB | Stored response, returned verbatim on replay (NULL while pending) |
+| `order_id` | UUID FK → orders.id, nullable | Convenience link for order placement; set in the same transaction as the order |
 | `created_at` | TIMESTAMPTZ NN | |
 | `expires_at` | TIMESTAMPTZ NN | e.g. created + 24 h; replay after expiry is a new request |
 
-UQ: `(restaurant_id, endpoint, key)`. Index: `expires_at` (for cleanup).
+UQ: `(restaurant_id, table_session_id, endpoint, key)` — **Stage 3.1:**
+the scope gained `table_session_id`, so one session can never replay
+or reuse another session's key, and the same key string in a
+different session is an independent claim. Index: `expires_at` (for
+cleanup).
+
+Claim lifecycle (Stage 3.1, api-plan.md § 10): a row is inserted
+FIRST with `response_status` / `response_body` / `order_id` NULL —
+that insert's commit is the atomic claim, and the DB unique
+constraint serialises concurrent claimants. The order-creation
+transaction then sets `order_id`; the stored response is filled in
+afterwards. A claim whose order creation fails is deleted, so a
+corrected retry can proceed. A competing request polls the row for
+up to 10 s; if the owner committed the order but has not filled the
+response yet, the response is rebuilt from the order via `order_id`.
 Only order placement uses this table in v1; bill generation and payment
 confirmation rely on status guards + row locks instead (they are not safely
 replayable by key alone — see `api-plan.md` § 7).

@@ -29,6 +29,7 @@
 | 1 | Project foundation & architecture | **Done — 23 Nov 2026, verified (see Stage 1 report below)** |
 | 2 | Guest interface & QR ordering | **Done (frontend) — 23 Nov 2026, verified (see Stage 2 report below).** Guest UI built against the api-plan.md contract with labelled Zaika sample data; backend half of Stage 2 (tables/menu/orders endpoints) deferred to Stage 3 per the Stage 2 instruction. |
 | 3 | Backend APIs & database integration | **Done (guest scope) — 23 Nov 2026, verified (see Stage 3 report below).** Guest backend only: models/migrations/seed, QR sessions, menu, orders, help calls. The roadmap's original Stage 3 scope (auth, staff/kitchen/admin endpoints, bills, reviews, audit) was narrowed by the Stage 3 instruction to the guest domain — the rest stays open and moves to Stages 4–7. |
+| 3.1 | Concurrent idempotency hardening | **Done — 23 Nov 2026, verified.** Session-scoped atomic claim-before-create; genuine 8-thread concurrency test on real Postgres (old code created 8 orders, new code creates 1). See Stage 3.1 report below. |
 | 4 | Kitchen Display System | Not started |
 | 5 | Waiter / Staff dashboard | Not started |
 | 6 | Billing & cash payments | Not started |
@@ -280,6 +281,36 @@ and record it as provisional).
 
 **Exit gate:** the backend is feature-complete for REST; the remaining stages
 are interfaces, billing, realtime, and hardening — not new domains.
+
+## Stage 3.1 — Concurrent idempotency hardening
+
+**Status: Done — 23 Nov 2026 (verified).** Sequential duplicates
+were already safe; concurrent duplicates were not — the claim was
+stored after the order committed, so 8 simultaneous requests with
+the same key created 8 orders (proven by the negative control
+below). Fixed with session-scoped atomic claim-before-create
+(`api-plan.md` § 10, `database-design.md` § 3.26): the claim row is
+inserted first, the DB unique constraint on
+`(restaurant_id, table_session_id, endpoint, key)` serialises
+concurrent claimants, the order transaction sets the claim's
+`order_id`, and the stored response is filled in afterwards. A
+competing request polls the claim for up to 10 s and replays the
+stored response (or the response rebuilt from the order); a still
+-pending owner yields `409 idempotency_in_progress`. A failed order
+creation deletes the claim, so a corrected retry can proceed.
+
+**Verification:** new `tests/test_orders_concurrency.py` (real
+PostgreSQL via pgserver, 8 threads, own engine + per-request
+sessions): 8 simultaneous same-key requests → exactly 1 order, 1
+order number, 1 order id in every response, 2 order-item rows, 1
+owner + 7 replays; same key + different body → 422; same key in a
+second session → a second, distinct order. Negative control: the
+same test against the pre-3.1 code created **8 orders**. Migration
+`3a1b7c9d4e2f` verified on real Postgres: backfill from orders,
+orphan-row deletion, constraint swap, downgrade −1, re-upgrade.
+Full suite: backend pytest 40 passed / 1 skipped, frontend Vitest
+32 passed, `npm run build` clean. No API or frontend contract
+changed.
 
 ---
 

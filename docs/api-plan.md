@@ -376,19 +376,45 @@ All events use the envelope in `architecture.md` § 6.1
 
 ## 10. Idempotency (§ 7 of the brief — the contract)
 
-> **Stage 3 status (23 Nov 2026): implemented as specified, verified
-> live and in tests.** `POST /orders` only. The idempotency record is
-> stored **after** the order transaction commits; a replay returns
-> the stored response verbatim with the original status and header
-> `Idempotency-Replayed: true`. Rate limits (slowapi, per IP):
-> `GET /guest/t/:tableToken` 120/minute, `POST /orders` 60/minute —
-> generous caps to blunt brute force / abuse, not to police guests.
+> **Stage 3.1 status (23 Nov 2026): claim-before-create.** The
+> idempotency record is no longer stored after the order — the claim
+> row is inserted FIRST and its commit is the atomic serialisation
+> point, so concurrent duplicates cannot create two orders. Scope
+> is now `(restaurant_id, table_session_id, endpoint, key)`: a key
+> is per-session and can never leak across sessions. A replay
+> returns the stored response verbatim with the original status and
+> header `Idempotency-Replayed: true`. Rate limits (slowapi, per
+> IP): `GET /guest/t/:tableToken` 120/minute, `POST /orders`
+> 60/minute — generous caps to blunt brute force / abuse, not to
+> police guests.
 
 - **Where:** `POST /orders` only in v1. The client generates a UUID
   `Idempotency-Key` per placement attempt and reuses it on retry.
 - **Storage:** `idempotency_keys` (see `database-design.md` § 3.26), keyed by
-  `(restaurant_id, endpoint, key)`, with a hash of the canonical request body
+  `(restaurant_id, table_session_id, endpoint, key)`, with a hash of the canonical request body
   and the stored response.
+- **Claim-before-create:** the service inserts the claim row
+  (`response_status` / `response_body` / `order_id` NULL) and commits
+  only that insert before validating or creating anything. The DB
+  unique constraint is the serialisation point: exactly one of any
+  set of concurrent requests with the same scoped key wins the
+  claim. The order-creation transaction then sets the claim's
+  `order_id` atomically with the order, and the stored response is
+  filled in afterwards (retried; if filling still fails, the order
+  stands and the response is rebuilt from the order via `order_id`).
+- **Competing request:** on a uniqueness conflict it polls the
+  claim row for up to 10 s (50 ms interval). If the owner finishes,
+  it returns the stored response verbatim (`Idempotency-Replayed:
+  true`). If the claim is expired it is deleted and the claim is
+  retried once. If the owner committed the order but has not filled
+  the response yet, the response is rebuilt from the order. If the
+  owner is still working after 10 s, the request gets `409`
+  `idempotency_in_progress` — retry with the same key.
+- **Failure cleanup:** if order creation fails after a successful
+  claim (validation, inactive session, or any error), the claim row
+  is deleted, so a corrected retry with the same key can proceed.
+  A failed order commit rolls back the order rows too — a partial
+  order is never exposed.
 - **Replay, same key + same body:** return the stored response verbatim with
   the original status code and a header `Idempotency-Replayed: true`. No new
   order, no new ticket.
@@ -424,6 +450,7 @@ One envelope:
 | 403 | `forbidden` | Authenticated but not allowed (wrong role, wrong restaurant, wrong table) |
 | 404 | `not_found` | Resource does not exist (or exists in another restaurant — same response, no leakage) |
 | 409 | `conflict` | Illegal status transition, duplicate open bill/call/session, second payment confirmation |
+| 409 | `idempotency_in_progress` | An order with this `Idempotency-Key` is already being placed (claim owner still working after the 10 s wait) — retry with the same key |
 | 410 | `session_expired` | Guest session expired |
 | 422 | `validation_failed` / `idempotency_key_required` / `idempotency_key_reused` / `invalid_variant` / `split_sum_mismatch` / `amount_exceeds_due` | Validation failed (details name the field) |
 | 429 | `rate_limited` | Too many requests |
