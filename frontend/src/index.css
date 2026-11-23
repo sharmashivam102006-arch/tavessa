@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: ui-sans-system, system-ui, "Segoe UI", Roboto, sans-serif;
+  /* Restrained warm accent: deep green for the brand, amber only for status. */
+  --color-brand-50: #f2f7f2;
+  --color-brand-100: #dcebe0;
+  --color-brand-600: #1d5c38;
+  --color-brand-700: #174a2d;
+  --color-brand-900: #0f2f1d;
+}
+
+:root {
+  color-scheme: light;
+  font-family: var(--font-sans);
+}
+
+body {
+  margin: 0;
+  background: #fafaf8;
+  color: #1c1917;
+  -webkit-font-smoothing: antialiased;
+}

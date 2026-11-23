@@ -1,0 +1,18 @@
+# Tavessa backend — Stage 1 (project foundation)
+# Pin major versions; minor bumps only via a reviewed change.
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30
+sqlalchemy>=2.0,<3
+alembic>=1.13
+psycopg[binary]>=3.2  # PostgreSQL driver (DATABASE_URL postgresql+psycopg://...)
+pydantic>=2.9
+pydantic-settings>=2.6
+python-dotenv>=1.0
+argon2-cffi>=23.1  # Argon2id password hashing (decision D-ARCH-6, Stage 1)
+python-jose[cryptography]>=3.3  # JWT (used from Stage 3 auth; installed now so the dep is pinned)
+slowapi>=0.1  # rate limiting (auth + order placement, from Stage 3)
+
+# Dev / test
+pytest>=8.3
+httpx>=0.27  # FastAPI TestClient transport
+httpx2>=0.1  # Starlette TestClient's preferred transport (avoids a deprecation warning)

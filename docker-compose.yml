@@ -1,0 +1,49 @@
+# Tavessa — local development with Docker Compose.
+# Docker is OPTIONAL: the app also runs without it (see README.md).
+#   docker compose up -d db        # Postgres only (recommended for dev)
+#   docker compose up --build      # db + api + web
+# The `api` service waits for `db` to be healthy before starting.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tavessa}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tavessa}
+      POSTGRES_DB: ${POSTGRES_DB:-tavessa}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tavessa} -d ${POSTGRES_DB:-tavessa}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: ../Dockerfile.backend
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tavessa}:${POSTGRES_PASSWORD:-tavessa}@db:5432/${POSTGRES_DB:-tavessa}
+      SECRET_KEY: ${SECRET_KEY:-dev-only-change-me-in-production}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:4173}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: ../Dockerfile.frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+
+volumes:
+  postgres-data:
