@@ -95,7 +95,9 @@ DEFAULT now()` unless stated otherwise. All tenant-scoped tables have
 | `address` | TEXT | |
 | `phone` | TEXT | |
 | `currency` | CHAR(3) NN DEFAULT 'INR' | v1: INR only |
-| `tax_mode` | TEXT NN DEFAULT 'inclusive' | **Placeholder — value decided by D1.** `inclusive` / `exclusive` / `none` |
+| `contact_name` | TEXT | Stage 7: owner-editable contact name |
+| `contact_email` | TEXT | Stage 7: owner-editable contact email |
+| `tax_mode` | TEXT NN DEFAULT 'inclusive' | **Placeholder — value decided by D1.** `inclusive` / `exclusive` / `none` — superseded in Stage 7 by the `tax_configurations` table (see § 3.29); this column is not used for billing. |
 | `service_charge_bps` | INT NN DEFAULT 0 | Basis points; 0 in v1 unless D1 decides otherwise |
 | `is_active` | BOOLEAN NN DEFAULT true | |
 | `settings` | JSONB DEFAULT '{}' | Small, versioned settings only (see § 8). Not a dumping ground. |
@@ -113,6 +115,10 @@ operation, not a schema change. Not exposed as a management surface in v1.
 | `restaurant_id` | UUID NN FK | |
 | `name` | TEXT NN | e.g. `Zaika — Main` |
 | `address` | TEXT | |
+| `timezone` | TEXT NN DEFAULT 'Asia/Kolkata' | Stage 7: branch timezone (IANA, validated against zoneinfo). All dashboard/report day boundaries are computed in this timezone, never server TZ. Seeded Zaika branch = `Asia/Kolkata`. |
+| `contact_name` | TEXT | Stage 7 |
+| `contact_phone` | TEXT | Stage 7 |
+| `contact_email` | TEXT | Stage 7 |
 | `is_active` | BOOLEAN NN DEFAULT true | |
 
 UQ: `(restaurant_id, name)`. Index: `restaurant_id`.
@@ -126,16 +132,25 @@ Guests never have a row here. A user belongs to one restaurant in v1.
 | `id` | UUID PK | |
 | `restaurant_id` | UUID NN FK | |
 | `branch_id` | UUID FK → branches.id, nullable | Null = all branches of that restaurant (v1) |
-| `name` | TEXT NN | |
-| `email` | CITEXT NN | Login identifier; citext for case-insensitive uniqueness |
-| `phone` | TEXT | |
-| `password_hash` | TEXT NN | Argon2id / bcrypt-12 — never plaintext |
-| `role` | TEXT NN | `owner` \| `admin` \| `waiter` \| `kitchen`. See § 6. `admin` = manager with owner-like rights except restaurant deletion / owner transfer (Stage 7 detail). |
-| `is_active` | BOOLEAN NN DEFAULT true | Deactivation blocks login + token validation |
+| `email` | TEXT NN | Login identifier, **stored lowercased** (works on SQLite tests too — no CITEXT dependency). |
+| `password_hash` | TEXT NN | Argon2id — never plaintext |
+| `role` | TEXT NN | `owner` \| `manager` \| `waiter` \| `kitchen` (Stage 7: `admin` renamed to `manager`; see § 6). |
+| `is_active` | BOOLEAN NN DEFAULT true | Deactivation blocks login + token validation; every request re-validates the user, so it is effective immediately |
+| `can_manage_staff` | BOOLEAN NN DEFAULT false | Stage 7: manager permission flag |
+| `can_manage_settings` | BOOLEAN NN DEFAULT false | Stage 7: manager permission flag |
+| `can_refund` | BOOLEAN NN DEFAULT false | Stage 7: manager permission flag |
+| `can_void` | BOOLEAN NN DEFAULT false | Stage 7: manager permission flag |
+| `must_change_password` | BOOLEAN NN DEFAULT false | Stage 7: set on user creation / password reset; cleared by `/auth/change-password` |
+| `deactivated_at` | TIMESTAMPTZ | Stage 7: set on deactivate |
 | `last_login_at` | TIMESTAMPTZ | |
+| `created_at` | TIMESTAMPTZ NN DEFAULT now() | |
 
 UQ: `(restaurant_id, email)`. Indexes: `restaurant_id`, `email`.
-Check: `role IN ('owner','admin','waiter','kitchen')`.
+Check: `role IN ('owner','manager','waiter','kitchen')`.
+**Stage 7 as built:** no `name`/`phone` columns — the blueprint's
+`name`/`phone`/`CITEXT` were not built (email is the identifier; the
+display name is the email). Owner always has all permissions; manager
+flags default False.
 
 ### 3.4 `dining_tables`
 
@@ -417,9 +432,15 @@ failure branch). A bill is generated from the session's unpaid orders.
 | `table_session_id` | UUID NN FK → table_sessions.id | |
 | `table_id` | UUID NN FK → dining_tables.id | Denormalised for staff lists, like orders/help_calls |
 | `bill_number` | TEXT NN | e.g. `B-2026-11-23-018`. UQ per restaurant. |
-| `status` | TEXT NN DEFAULT 'issued' | See § 6 — bill status machine. CHECK `issued \| payment_requested \| paid` only — no `voided`/`refunded` states in Stage 6 (void is owner-only, deferred to Stage 7). |
+| `status` | TEXT NN DEFAULT 'issued' | See § 6 — bill status machine. CHECK `issued \| payment_requested \| paid \| voided \| refunded \| partially_refunded` (Stage 7 added the last three). |
 | `subtotal_paise` | BIGINT NN | Server-computed from bill items |
-| `tax_paise` | BIGINT NN DEFAULT 0 | Per D1 — UNDECIDED in Stage 6: 0 means "not configured", not 0% (see Stage 6 decisions in the roadmap) |
+| `tax_paise` | BIGINT NN DEFAULT 0 | Stage 7 (D1 decided): computed from the active tax config at freeze; 0 with no snapshot = unconfigured at freeze, not 0% |
+| `tax_rate_bps_snapshot` | INT | Stage 7: NULL = unconfigured at freeze |
+| `tax_mode_snapshot` | TEXT | Stage 7: `inclusive` \| `exclusive`, NULL = unconfigured at freeze |
+| `tax_label_snapshot` | TEXT | Stage 7: e.g. `GST`, NULL = unconfigured at freeze |
+| `voided_at` | TIMESTAMPTZ | Stage 7: set on void |
+| `void_reason` | TEXT | Stage 7: required on void |
+| `voided_by` | UUID FK → users.id | Stage 7: the owner/manager who voided |
 | `service_charge_paise` | BIGINT NN DEFAULT 0 | Per D1 |
 | `discount_paise` | BIGINT NN DEFAULT 0 | Per D2; 0 unless discounts are decided in |
 | `total_paise` | BIGINT NN | Server-computed |
@@ -429,14 +450,17 @@ failure branch). A bill is generated from the session's unpaid orders.
 | `paid_at` | TIMESTAMPTZ | Set when `amount_paid == total` |
 | `version` | INT NN DEFAULT 1 | Optimistic locking for payment confirmation |
 
-> **Stage 6 as implemented (23 Nov 2026):** the `voided_at` /
-> `void_reason` columns from the blueprint were NOT built — bill void
-> is owner-only and deferred to Stage 7, so no void columns or states
-> exist. `branch_id` and `table_id` were added (see rows above).
+> **Stage 7 as implemented (24 Nov 2026):** the void columns and
+> the `voided`/`refunded`/`partially_refunded` states ARE built (see
+> rows above). Voided bills do NOT block a new bill (the partial UQ
+> below still covers only `issued`/`payment_requested`), and voided
+> bills' items are NOT counted as referenced when computing billable
+> items — a voided bill's items become billable again. A voided
+> bill's outstanding is 0 (written off).
 
 UQ: `(restaurant_id, bill_number)`. Partial UQ: one open bill per session —
 `UQ (table_session_id) WHERE status IN ('issued','payment_requested')`
-(Stage 6 implementation).
+(Stage 6 implementation, unchanged in Stage 7).
 Indexes: `(restaurant_id, status)`, `(table_session_id)`, `(restaurant_id, issued_at)`.
 
 ### 3.17 `bill_items`
@@ -491,10 +515,10 @@ There is no guest-created payment row.
 | `method` | TEXT NN DEFAULT 'cash' | v1: `cash` only. Check constraint enforces it — adding a method is a migration + decision, not a string change. |
 | `idempotency_key` | TEXT NN | The request's `Idempotency-Key` header (required); replay key for the payment claim |
 | `amount_paise` | BIGINT NN CHECK (> 0) | Must be ≤ amount due on the bill/split (service-validated) |
-| `collected_by` | UUID NULL | Stage 6 decision 5: NULLABLE and always NULL — no users system yet, and the brief forbids inventing a staff identity. (The blueprint's NN FK → users.id is NOT built.) |
+| `collected_by` | UUID FK → users.id, nullable | Stage 7: the confirming user's id when called with a JWT; NULL only for dev-key calls in dev (Stage 6: always NULL — no users system yet). |
 | `collected_at` | TIMESTAMPTZ NN DEFAULT now() | |
 | `change_due_paise` | BIGINT NN DEFAULT 0 | Overpayment handling per D9 — always 0 in v1 (no change handling) |
-| `status` | TEXT NN DEFAULT 'confirmed' | `confirmed` ONLY in Stage 6 — `refunded`/`voided` states are NOT built (refunds deferred to Stage 7) |
+| `status` | TEXT NN DEFAULT 'confirmed' | `confirmed` \| `refunded` \| `partially_refunded` (Stage 7 added the last two; recomputed on refund — the payment row itself is never deleted or overwritten). |
 | `receipt_number` | TEXT NN | Generated at confirmation, e.g. `R-2026-11-23-001`. UQ **per restaurant** `(restaurant_id, receipt_number)` — the daily sequence restarts per restaurant, so the UQ is not global. |
 | `note` | TEXT | Optional waiter note recorded at confirmation |
 
@@ -505,12 +529,15 @@ Check: `method = 'cash'`.
 > there is no update/delete code path for this table anywhere in the
 > app. The audit trail in this stage IS this table (timestamps, amounts,
 > receipt numbers, idempotency keys); there is no `audit_logs` table.
+>
+> **Stage 7 (24 Nov 2026):** `audit_logs` now exists (§ 3.25) and
+> `payment.recorded` is written there in the same transaction as the
+> payment. Payments stay append-only — only the `status` column
+> changes, via refunds (never a delete/overwrite).
 
 ### 3.20 `refunds`
 
-> **NOT BUILT in Stage 6** — blueprint row only. Refunds need owner
-> authority (D3) and owner auth, which do not exist yet; deferred to
-> Stage 7 with bill void and the daily cash report.
+> **BUILT in Stage 7 (24 Nov 2026)** — see `api-plan.md` § 7.3.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -518,11 +545,16 @@ Check: `method = 'cash'`.
 | `restaurant_id` | UUID NN FK | |
 | `payment_id` | UUID NN FK → payments.id | |
 | `bill_id` | UUID NN FK | |
-| `amount_paise` | BIGINT NN CHECK (> 0) | ≤ payment amount minus prior refunds |
+| `amount_paise` | BIGINT NN CHECK (> 0) | ≤ payment amount minus prior refunds (service-validated under row lock) |
 | `reason` | TEXT NN | Required |
-| `authorised_by` | UUID NN FK → users.id | Owner/admin only (per D3) |
+| `refund_reference` | TEXT NN | e.g. `RFD-2026-11-24-001`. UQ per restaurant. |
+| `refunded_by` | UUID NN FK → users.id | Owner, or manager with `can_refund` (D3 decided in Stage 7) |
 | `refunded_at` | TIMESTAMPTZ NN DEFAULT now() | |
+| `idempotency_key` | TEXT NN | The request's `Idempotency-Key` header (required) |
+| `created_at` | TIMESTAMPTZ NN DEFAULT now() | |
 
+UQ: `(restaurant_id, bill_id, idempotency_key)` — the refund claim
+scope, reusing the Stage 3.2/Stage 6 single-transaction claim pattern.
 Index: `(payment_id)`, `(bill_id)`.
 
 ### 3.21 `help_calls`
@@ -605,13 +637,19 @@ Index: `(user_id, is_read, created_at)`, `(restaurant_id, created_at)`.
 |---|---|---|
 | `id` | UUID PK | |
 | `restaurant_id` | UUID NN FK | |
-| `user_id` | UUID FK → users.id, nullable | Null = guest/session action |
-| `table_session_id` | UUID FK, nullable | |
-| `action` | TEXT NN | e.g. `payment.confirmed`, `refund.recorded`, `menu.price_changed`, `qr.rotated`, `user.role_changed` |
+| `branch_id` | UUID FK → branches.id, nullable | Stage 7 |
+| `actor_user_id` | UUID FK → users.id, nullable | Stage 7: null = system/bootstrap (no `user_id`/`table_session_id`/`ip_address` columns — not built) |
+| `action` | TEXT NN | e.g. `login.success`, `refund.created`, `menu.price_changed`, `bill.voided`, `user.role_changed` |
 | `entity_type`, `entity_id` | TEXT / UUID | What changed |
-| `details` | JSONB DEFAULT '{}' | Before/after values for sensitive fields (never passwords/tokens) |
-| `ip_address` | INET | |
+| `details` | JSONB DEFAULT '{}' | Before/after values for sensitive fields. The writer drops any key containing `password`/`token`/`secret`/`hash`/`otp`/`cookie`/`dev_key`/`authorization` and truncates values to 500 chars — secrets are never written. |
+| `correlation_id` | TEXT | Stage 7: nullable |
 | `created_at` | TIMESTAMPTZ NN DEFAULT now() | |
+
+**Stage 7 as built (24 Nov 2026):** the table exists now (migration
+`b7c2e9a1d4f5`). No UPDATE/DELETE methods anywhere, no API route
+mutates it. Audit rows are written in the same transaction as the
+action where possible; failed operations write no success record
+(except login failures, recorded as failures).
 
 Indexes: `(restaurant_id, created_at)`, `(entity_type, entity_id)`.
 Rule: no UPDATE/DELETE on this table in application code; retention is a
@@ -655,6 +693,64 @@ retry with the same key proceeds.
 Only order placement uses this table in v1; bill generation and payment
 confirmation rely on status guards + row locks instead (they are not safely
 replayable by key alone — see `api-plan.md` § 7).
+
+### 3.27 `refresh_sessions` — rotating refresh tokens (Stage 7)
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `user_id` | UUID NN FK → users.id | |
+| `family_id` | UUID NN | Token family — reuse of a revoked token revokes the whole family |
+| `token_hash` | TEXT NN | SHA-256 hex of the opaque refresh token; the raw token is never stored |
+| `expires_at` | TIMESTAMPTZ NN | 7 days from issue |
+| `revoked_at` | TIMESTAMPTZ | NULL = live |
+| `ip_address` | TEXT | Optional, for audit |
+| `user_agent` | TEXT | Optional, for audit |
+| `created_at` | TIMESTAMPTZ NN DEFAULT now() | |
+
+Index: `(user_id)`, `(family_id)`. Rotation on every use (old token
+revoked, new token same family). Logout revokes the presented token;
+change-password / deactivate / password-reset revoke ALL of the user's
+sessions.
+
+### 3.28 `ws_tickets` — single-use WebSocket tickets (Stage 7)
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `user_id` | UUID NN FK → users.id | |
+| `restaurant_id` | UUID NN FK | |
+| `channel` | TEXT NN | `kitchen` \| `staff` (CHECK) |
+| `ticket_hash` | TEXT NN UQ | SHA-256 hex of the opaque ticket; the raw ticket is never stored or logged |
+| `expires_at` | TIMESTAMPTZ NN | 60 s from issue |
+| `used_at` | TIMESTAMPTZ | NULL = unused; set (single-use) at connect |
+| `created_at` | TIMESTAMPTZ NN DEFAULT now() | |
+
+Server-side by design: single-use requires server state, so tickets
+are NOT signed JWTs in the URL. Validation at connect: hash lookup,
+not expired, not used, user still active and still holding the channel
+permission, restaurant matches.
+
+### 3.29 `tax_configurations` — owner tax config history (Stage 7, D1)
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `restaurant_id` | UUID NN FK | |
+| `branch_id` | UUID FK → branches.id, nullable | NULL = restaurant-level (v1: all configs are restaurant-level) |
+| `enabled` | BOOLEAN NN | |
+| `rate_bps` | INT | CHECK 0–10000; required when enabled |
+| `mode` | TEXT NN | `inclusive` \| `exclusive` (CHECK) |
+| `label` | TEXT | e.g. `GST` |
+| `effective_from` | TIMESTAMPTZ NN | Must be now-or-future at creation |
+| `created_by` | UUID FK → users.id, nullable | NULL = bootstrap/system |
+| `created_at` | TIMESTAMPTZ NN DEFAULT now() | |
+
+History = rows, never updates. UQ: `(restaurant_id, effective_from)` —
+no two configs share an effective_from. The active config at any instant
+is the one with the greatest `effective_from` ≤ now. No row = the
+restaurant's tax is **unconfigured** — distinct from an explicit 0%
+rate (`enabled=true`, `rate_bps=0`).
 
 ## 4. What was deliberately *not* created
 
@@ -789,9 +885,19 @@ issued → paid
 > (`POST /staff/bills/:id/payments`); a `paid` bill is frozen forever,
 > and new orders after it go on a NEW bill containing only order items
 > not referenced by any existing `bill_item` for the session. There
-> are NO `voided`/`refunded` states in this stage (owner-only,
-> deferred to Stage 7). One open bill per session is enforced by the
-> partial unique index `UQ (table_session_id) WHERE status IN
+> **Stage 7 (24 Nov 2026):** `voided`/`refunded`/
+> `partially_refunded` states ARE built now: `issued → voided` and
+> `payment_requested → voided` (owner, or manager with `can_void`,
+> only with zero confirmed payments — any confirmed payment → 409
+> "refund required first"; repeat void → 409); `paid →
+> refunded/partially_refunded` via refunds (status recomputed).
+> Voided bills do not block a new bill and their items become
+> billable again. **Tax freeze point:** the transition to
+> `payment_requested` (and payment time, when a bill is paid without
+> a prior request) snapshots the applicable tax policy + computed
+> tax onto the bill; frozen/paid bills never change afterwards.
+> One open bill per session is enforced by the partial unique index
+> `UQ (table_session_id) WHERE status IN
 > ('issued','payment_requested')`. Session close after all bills are
 > paid is still deferred (Stage 5 deferred it, Stage 6 did not add
 > it).
@@ -868,7 +974,9 @@ unpaid → payment_requested → paid
 ```
 confirmed → refunded   (when fully refunded)
 confirmed → partially_refunded (when partly refunded — recomputed)
-confirmed → voided     (owner void, with reason + audit; money handling per Stage 6)
+
+Payments are NEVER voided — only bills are. (The blueprint's
+`confirmed → voided` line was wrong; removed in Stage 7.)
 ```
 
 ### Help calls — `help_calls.status`

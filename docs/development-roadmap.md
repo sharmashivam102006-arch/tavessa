@@ -716,39 +716,113 @@ receipt view, and the cash handover itself is a human step at the table).
 
 ---
 
-## Stage 7 — Owner / Admin dashboard
+## Stage 7 — Owner / Admin dashboard ✅ COMPLETE (24 Nov 2026)
 
 **Goal:** the owner can run the restaurant from the dashboard — live
-operations, sales, cash, menu, staff, history, analytics, settings.
+operations, sales, cash, menu, staff, history, settings, tax, voids,
+refunds, audit log — with password authentication for staff and owner.
 
-**Work:**
+**What was built (commit: see report below):**
 
-- [ ] Backend: overview aggregates, sales analytics (by day/category/item,
-  busiest hours, AOV, top items), order/bill history with filters, staff
-  CRUD + assignments, restaurant settings, QR rotation, review moderation
-  (per D6).
-- [ ] Frontend (admin): overview (occupancy, active orders, kitchen depth,
-  open calls, bills awaiting cash, today's sales/cash), menu management
-  (categories, items, variants, add-ons, availability toggle, image upload),
-  staff management, order/bill/payment history, analytics views, settings.
-- [ ] Menu price-change audit visible in the dashboard (or at least in the
-  audit log view, if a dedicated view is deferred — record the choice).
+- **Auth** (`backend/app/auth/`): `users`, `refresh_sessions`,
+  `ws_tickets`, `tax_configurations`, `refunds`, `audit_logs` tables in
+  one migration (`b7c2e9a1d4f5`, upgrade + downgrade + re-upgrade verified
+  on real PostgreSQL with live Stage 6 data preserved). JWT access tokens
+  (15 min, HS256) + rotating opaque refresh tokens (7 days, SHA-256 hash
+  stored, reuse revokes the whole family), HttpOnly refresh cookie,
+  `POST /api/v1/auth/login|refresh|logout|change-password`,
+  `GET /api/v1/auth/me`, login rate-limited 10/min/IP, generic 401s,
+  Argon2id passwords, bootstrap CLI `python -m app.auth.bootstrap`
+  (getpass, refuses if an owner exists; no public owner registration).
+  Permissions in `app/auth/permissions.py` with `require_permission()`;
+  every request does a DB lookup, so deactivation is effective
+  immediately everywhere.
+- **Admin API** (`/api/v1/admin`): dashboard overview (branch-timezone
+  presets, gross/cash/refunds/net/outstanding as separate fields),
+  orders/bills/payments/refunds history, daily cash report (JSON + CSV),
+  menu CRUD + reorder + price-change audit, users CRUD + deactivate +
+  reset-password (last-active-owner guard), restaurant/branch/table
+  settings, tax config + history, bill void, cash refunds (idempotent),
+  read-only audit logs. All `{"data": …}` wrapped.
+- **Dev-key retirement:** production requires JWT everywhere (staff,
+  kitchen, admin, WS tickets) and returns 401 for dev keys; dev keeps
+  both. Frontend sends dev keys only under `import.meta.env.DEV`.
+- **WS tickets:** `POST /api/v1/ws/tickets` issues a server-side,
+  hashed, single-use ticket (60 s); `/ws/kitchen` and `/ws/staff`
+  accept `?ticket=` (or `?dev_key=` in dev). Bad ticket → 4401,
+  wrong role / production dev key → 4403, restaurant mismatch → 4404.
+  The socket is accepted then closed with the code (uvicorn turns
+  close-before-accept into a bare HTTP 403, so the codes never reached
+  real clients before this change).
+- **Tax (D1 decided — see below):** owner-only config, explicit rate
+  (0–10000 bps, inclusive/exclusive, label, effective_from now-or-future,
+  no two configs share an effective_from, active = greatest
+  effective_from ≤ now). Unconfigured is a distinct state from 0%.
+  Bills recompute with the current config while `issued`; at the freeze
+  point (transition to `payment_requested`, and also at payment time if
+  paid without a prior request) the tax policy + computed tax are
+  snapshotted onto the bill and never change afterwards.
+- **Void + refunds:** void only from `issued`/`payment_requested`
+  with zero confirmed payments (else 409 "refund required first");
+  repeat void → 409; voided items become billable again. Refunds
+  require `Idempotency-Key`, one transaction under bill+payment row
+  lock, amount ≤ payment − prior refunds, original payment never
+  deleted/overwritten, bill/payment status recomputed.
+- **Frontend:** `/login` (in-memory token only, role redirect,
+  must-change-password flow), `/admin` with AdminLayout (Overview,
+  Orders, Menu, Staff, Tables, Bills, Cash reports, Refunds, Audit log,
+  Settings), kitchen/staff pages use JWT tickets in production builds.
+  Screenshots: `docs/stage7-screenshots/` (9, real data).
+- **Tests:** backend 164 passed / 1 skipped (was 126; +36 admin +2
+  Postgres concurrency); frontend 100 passed / 12 files; live
+  verification 37/37 (bootstrap → login → role gates → order → bill →
+  cash confirm as waiter → void → partial refund → cash report
+  reconciles → audit log → WS ticket + reuse 4401) and migration
+  verification 14/14. Scripts: `backend/scripts/verify_stage7_live.py`,
+  `verify_stage7_migration.py`, `screenshots_stage7.py`.
 
-**Decisions needed:** D6 (review moderation), D10 (seed settings finalised).
+**Decisions recorded (brief governs over this roadmap):**
+
+1. **Deferred out of Stage 7** (roadmap listed them here; the brief
+   does not assign them): QR token rotation, review moderation (D6),
+   menu image upload, staff assignments, busiest-hours / by-category
+   analytics depth. Analytics in this stage = the brief §4 dashboard
+   metrics only.
+2. **Manager "Configurable" permissions** are explicit boolean flags
+   on the user record (`can_manage_staff`, `can_manage_settings`,
+   `can_refund`, `can_void`), default False, toggleable by the owner.
+   Owner always has all permissions. Manager cannot configure tax.
+   Waiter `view_kitchen` = No in v1 (brief said "Optional").
+3. **Bill freeze point** for the tax snapshot is the Stage 6 freeze
+   point: the transition to `payment_requested` (also at payment time
+   when a bill is paid without a prior request).
+4. **WS tickets are stored server-side** (DB table, hashed, single-use,
+   ~60s expiry) — NOT signed JWTs in the URL, because single-use
+   requires server state.
+5. **Production dev-key behaviour changed** from the Stage 4/5 spec
+   (503 `*_auth_not_configured`) to 401 `unauthenticated`, per the
+   Stage 7 brief §B; three existing tests updated accordingly.
+6. **A voided bill shows outstanding ₹0** — it is written off; its
+   total no longer counts as owed (fixed in `billing_service._bill_out`
+   and the admin bills list; regression test added).
 
 **Acceptance criteria:**
 
-- [ ] The overview matches the live state (open the dashboard during a live
-  order and watch occupancy, orders, and cash update on refresh).
-- [ ] Toggling an item unavailable removes it from orderable items for new
-  guest orders and does not affect orders already placed.
-- [ ] A menu price change is audited and does not change any existing bill.
-- [ ] Rotating a table's QR token immediately invalidates the old token.
-- [ ] Analytics numbers reconcile with the underlying orders/bills (spot-check
-  by hand for one day).
+- [x] The overview matches the live state (verified live: gross ₹725.00
+  = paid ₹387.00 + re-billed ₹338.00; cash ₹387.00; refunds ₹10.00;
+  net ₹377.00; outstanding ₹338.00 — reconciled by hand).
+- [x] Toggling an item unavailable removes it from orderable items for
+  new guest orders and does not affect orders already placed.
+- [x] A menu price change is audited (`menu.price_changed`) and does
+  not change any existing bill.
+- [ ] Rotating a table's QR token immediately invalidates the old token
+  — **DEFERRED** (see decision 1).
+- [x] Dashboard / cash-report numbers reconcile with the underlying
+  orders/bills (spot-checked live for one day; see report above).
 
-**Exit gate:** the owner can run a full service (menu change, staff check,
-cash check) from the dashboard without touching the database.
+**Exit gate:** the owner can run a full service (menu change, staff
+check, cash check) from the dashboard without touching the database.
+✅ — verified live against real PostgreSQL.
 
 ---
 
@@ -881,9 +955,9 @@ not architectural); domain + TLS; Postgres backup schedule.
 
 | # | Decision | Needed by |
 |---|---|---|
-| D1 | Tax: GST-inclusive vs exclusive, service charge, rounding | STILL OPEN — Stage 6 shipped with tax "not configured" (see Stage 6 decisions); a restaurant-level tax config is a future stage, not Stage 6 |
+| D1 | Tax: GST-inclusive vs exclusive, service charge, rounding | DECIDED in Stage 7 (24 Nov 2026): the owner configures a tax rate (0–10000 bps, inclusive or exclusive, label, effective_from now-or-future; active = greatest effective_from ≤ now). No config = "unconfigured" (distinct from an explicit 0% rate). Bills recompute with the current config while `issued`; at the freeze point (→ `payment_requested`, or at payment time) the tax policy + computed tax are snapshotted onto the bill and never change. Exclusive: total = subtotal + tax. Inclusive: total = subtotal, tax_paise = the tax component inside it. Service charge and discounts remain 0 / not configured. Tavessa claims no tax compliance — the UI says so. |
 | D2 | Discounts / complimentary items | Stage 6 |
-| D3 | Refund authority + limits | Stage 7 (owner auth) — refunds deferred out of Stage 6 |
+| D3 | Refund authority + limits | DECIDED in Stage 7 (24 Nov 2026): refunds are owner-only, or manager with `can_refund`. Cash refunds only, against a confirmed payment, amount ≤ payment − prior refunds, `Idempotency-Key` required, one transaction under bill+payment row lock. Bill void is owner-only, or manager with `can_void`, only for unpaid bills (any confirmed payment → 409 "refund required first"). |
 | D4 | QR printing (format, size, who prints) | Stage 2 |
 | D5 | Table session expiry + close rules | Stage 2 |
 | D6 | Review moderation (immediate vs held, editable?) | Stage 2 / 7 |

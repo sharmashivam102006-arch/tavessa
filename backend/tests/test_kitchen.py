@@ -21,6 +21,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.models import Branch, DiningTable, Order, Restaurant
 from tests.helpers import (
+    assert_ws_rejected,
     fresh_table_token,
     headers,
     make_token,
@@ -113,19 +114,20 @@ def test_guest_token_does_not_grant_kitchen_access(client, setup):
 
 
 def test_kitchen_production_503(client, setup):
+    # Stage 7: production no longer returns 503 — JWT is required
+    # and the dev key is NEVER accepted there (401).
     previous = settings.environment
     settings.environment = "production"
     try:
         response = _kitchen_list(client, setup)
-        assert response.status_code == 503, response.text
-        assert response.json()["error"]["code"] == "kitchen_auth_not_configured"
+        assert response.status_code == 401, response.text
+        assert response.json()["error"]["code"] == "unauthenticated"
         # The WS handshake refuses in production too (4403).
-        with pytest.raises(WebSocketDisconnect) as exc:
-            with client.websocket_connect(
-                f"/ws/kitchen?restaurant_id={setup['restaurant_id']}&dev_key={DEV_KEY}"
-            ):
-                pass
-        assert exc.value.code == 4403
+        assert_ws_rejected(
+            client,
+            f"/ws/kitchen?restaurant_id={setup['restaurant_id']}&dev_key={DEV_KEY}",
+            4403,
+        )
     finally:
         settings.environment = previous
 
@@ -530,22 +532,13 @@ def test_cross_restaurant_isolation(client, db_session, setup):
 
 def test_ws_auth_rejected(client, setup):
     rid = setup["restaurant_id"]
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with client.websocket_connect(f"/ws/kitchen?restaurant_id={rid}"):
-            pass
-    assert exc.value.code == 4401
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with client.websocket_connect(
-            f"/ws/kitchen?restaurant_id={rid}&dev_key=wrong"
-        ):
-            pass
-    assert exc.value.code == 4401
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with client.websocket_connect(
-            f"/ws/kitchen?restaurant_id={uuid.uuid4()}&dev_key={DEV_KEY}"
-        ):
-            pass
-    assert exc.value.code == 4404
+    assert_ws_rejected(client, f"/ws/kitchen?restaurant_id={rid}", 4401)
+    assert_ws_rejected(
+        client, f"/ws/kitchen?restaurant_id={rid}&dev_key=wrong", 4401
+    )
+    assert_ws_rejected(
+        client, f"/ws/kitchen?restaurant_id={uuid.uuid4()}&dev_key={DEV_KEY}", 4404
+    )
 
 
 def test_ws_order_created_and_status_changed(client, setup):

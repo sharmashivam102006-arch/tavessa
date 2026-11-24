@@ -82,3 +82,20 @@ def menu_by_name(client, token):
     assert response.status_code == 200, response.text
     body = response.json()
     return {item["name"]: item for item in body["items"]}, body
+
+
+def assert_ws_rejected(client, url, code):
+    """Connect to a WS URL that must refuse auth; assert the close code.
+
+    Stage 7: the server accepts the socket and then closes it with
+    the code (uvicorn turns close-before-accept into a bare HTTP 403,
+    so the code would never reach a real client). The disconnect is
+    therefore observed on receive, not at connect.
+    """
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+
+    with client.websocket_connect(url) as ws:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_text()
+    assert exc.value.code == code, f"expected close {code}, got {exc.value.code}"

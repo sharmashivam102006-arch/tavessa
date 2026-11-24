@@ -547,3 +547,217 @@ export type StaffConnectionStatus =
   | "connecting"
   | "reconnecting"
   | "offline";
+
+/* ------------------------------------------------------------------ */
+/* Admin (api-plan.md § 8 — Stage 7)                                   */
+/* ------------------------------------------------------------------ */
+
+export interface DashboardOverview {
+  restaurantId: string;
+  branchId: string | null;
+  periodStart: string;
+  periodEnd: string;
+  preset: string;
+  timezone: string;
+  grossSalesPaise: number;
+  cashCollectedPaise: number;
+  refundsPaise: number;
+  netCashPaise: number;
+  outstandingPaise: number;
+  billCount: number;
+  orderCount: number;
+  averageOrderValuePaise: number;
+  ordersByStatus: { status: string; count: number }[];
+  recentPayments: {
+    id: string;
+    billId: string;
+    billNumber: string;
+    tableNumber: number;
+    amountPaise: number;
+    receiptNumber: string;
+    collectedAt: string;
+    collectedByName: string | null;
+  }[];
+  recentActivity: {
+    id: string;
+    action: string;
+    entityType: string | null;
+    entityId: string | null;
+    details: Record<string, unknown> | null;
+    createdAt: string;
+  }[];
+  bestSellers: {
+    menuItemId: string;
+    name: string;
+    quantity: number;
+    revenuePaise: number;
+  }[];
+}
+
+export interface AdminOrder {
+  id: string;
+  orderNumber: string;
+  tableNumber: number;
+  tableSessionId: string;
+  status: string;
+  subtotalPaise: number;
+  totalPaise: number;
+  placedAt: string;
+  itemCount: number;
+}
+
+export interface AdminBill {
+  id: string;
+  billNumber: string;
+  tableNumber: number;
+  status: string;
+  totalPaise: number;
+  amountPaidPaise: number;
+  collectedPaise: number;
+  outstandingPaise: number;
+  refundPaise: number;
+  netCollectedPaise: number;
+  issuedAt: string;
+  paidAt: string | null;
+  voidedAt: string | null;
+  voidReason: string | null;
+}
+
+export interface AdminPayment {
+  id: string;
+  billId: string;
+  billNumber: string;
+  receiptNumber: string;
+  amountPaise: number;
+  method: string;
+  status: string;
+  collectedAt: string;
+  collectedByName: string | null;
+}
+
+export interface AdminRefund {
+  id: string;
+  refundReference: string;
+  billId: string;
+  billNumber: string;
+  paymentId: string;
+  receiptNumber: string | null;
+  amountPaise: number;
+  reason: string;
+  refundedByName: string | null;
+  refundedAt: string;
+}
+
+export interface DailyCash {
+  date: string;
+  timezone: string;
+  periodStart: string;
+  periodEnd: string;
+  grossCashCollectedPaise: number;
+  cashRefundsPaise: number;
+  netCashPaise: number;
+  outstandingPaise: number;
+  billCount: number;
+  paymentCount: number;
+  refundCount: number;
+}
+
+export interface AdminCategory {
+  id: string;
+  name: string;
+  description: string | null;
+  sortOrder: number;
+  isActive: boolean;
+  itemCount: number;
+}
+
+export interface AdminMenuItem {
+  id: string;
+  categoryId: string;
+  categoryName: string | null;
+  name: string;
+  description: string | null;
+  pricePaise: number;
+  isVeg: boolean;
+  isAvailable: boolean;
+  isPopular: boolean;
+  imageUrl: string | null;
+  station: string;
+  sortOrder: number;
+  variants: { id: string; name: string; priceDeltaPaise: number; sortOrder: number; isAvailable: boolean }[];
+  addOns: { id: string; name: string; pricePaise: number; isAvailable: boolean }[];
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  role: string;
+  restaurantId: string;
+  branchId: string | null;
+  isActive: boolean;
+  canManageStaff: boolean;
+  canManageSettings: boolean;
+  canRefund: boolean;
+  canVoid: boolean;
+  mustChangePassword: boolean;
+  lastLoginAt: string | null;
+  createdAt: string | null;
+}
+
+export interface AuditLogRow {
+  id: string;
+  action: string;
+  entityType: string | null;
+  entityId: string | null;
+  details: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface TaxConfig {
+  id: string;
+  enabled: boolean;
+  rateBps: number | null;
+  mode: string;
+  label: string | null;
+  effectiveFrom: string;
+  createdAt: string;
+}
+
+export interface RestaurantSettings {
+  id: string;
+  name: string;
+  slug: string;
+  tagline: string | null;
+  cuisine: string | null;
+  address: string | null;
+  phone: string | null;
+  contactName: string | null;
+  contactEmail: string | null;
+  openingHours: string | null;
+  currency: string;
+}
+
+export interface BranchSettings {
+  id: string;
+  name: string;
+  slug: string;
+  address: string | null;
+  timezone: string;
+  contactName: string | null;
+  contactPhone: string | null;
+  contactEmail: string | null;
+  isActive: boolean;
+}
+
+export interface AdminTable {
+  id: string;
+  number: number;
+  status: string;
+  branchId: string;
+  isActive: boolean;
+}
+
+export interface Page<T> {
+  data: T[];
+  pagination: { page: number; per_page: number; total: number; total_pages: number };
+}

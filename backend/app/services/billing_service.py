@@ -75,6 +75,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.errors import ApiError
+from app.services.audit_service import write_audit
 from app.models import (
     Bill,
     BillItem,
@@ -221,11 +222,20 @@ def _bill_out(db: Session, bill: Bill) -> BillOut:
         discount_paise=bill.discount_paise,
         total_paise=bill.total_paise,
         amount_paid_paise=bill.amount_paid_paise,
-        outstanding_paise=max(0, bill.total_paise - bill.amount_paid_paise),
+        # A voided bill is written off — nothing is owed on it.
+        outstanding_paise=(
+            0 if bill.status == "voided"
+            else max(0, bill.total_paise - bill.amount_paid_paise)
+        ),
         issued_at=bill.issued_at,
         payment_requested_at=bill.payment_requested_at,
         paid_at=bill.paid_at,
         version=bill.version,
+        voided_at=bill.voided_at,
+        void_reason=bill.void_reason,
+        tax_rate_bps_snapshot=bill.tax_rate_bps_snapshot,
+        tax_mode_snapshot=bill.tax_mode_snapshot,
+        tax_label_snapshot=bill.tax_label_snapshot,
     )
 
 
@@ -256,6 +266,16 @@ def build_receipt(db: Session, bill: Bill) -> ReceiptOut:
     # here — a pre-commit Payment carries an aware datetime while
     # rows loaded from SQLite are naive, and sorting would crash.
     payments = out.payments
+    if bill.tax_label_snapshot:
+        rate = bill.tax_rate_bps_snapshot
+        tax_status = (
+            f"Tax: {bill.tax_label_snapshot}"
+            + (f" {rate / 100:.2f}%" if rate is not None else "")
+            + (f" ({bill.tax_mode_snapshot})" if bill.tax_mode_snapshot else "")
+            + " — as configured when this bill was frozen"
+        )
+    else:
+        tax_status = TAX_STATUS_TEXT
     return ReceiptOut(
         restaurant_name=restaurant.name if restaurant else "",
         branch_name=branch.name if branch else None,
@@ -267,7 +287,10 @@ def build_receipt(db: Session, bill: Bill) -> ReceiptOut:
         items=out.items,
         subtotal_paise=bill.subtotal_paise,
         tax_paise=bill.tax_paise,
-        tax_status=TAX_STATUS_TEXT,
+        tax_status=tax_status,
+        tax_rate_bps_snapshot=bill.tax_rate_bps_snapshot,
+        tax_mode_snapshot=bill.tax_mode_snapshot,
+        tax_label_snapshot=bill.tax_label_snapshot,
         total_paise=bill.total_paise,
         amount_received_paise=bill.amount_paid_paise,
         outstanding_paise=max(0, bill.total_paise - bill.amount_paid_paise),
@@ -297,6 +320,10 @@ def _billable_order_items(
         .where(
             Bill.table_session_id == session_id,
             BillItem.order_item_id.is_not(None),
+            # Stage 7: a VOIDED bill's items are billable again —
+            # voiding un-references them (the bill is kept, not
+            # deleted, but its items no longer block a new bill).
+            Bill.status != "voided",
         )
     )
     if exclude_bill_id is not None:
@@ -359,8 +386,12 @@ def _next_receipt_number(db: Session, restaurant: Restaurant) -> str:
 
 def _build_lines(db: Session, bill: Bill, items: list[OrderItem]) -> int:
     """Replace the bill's lines from order-item snapshots and
-    recompute totals. Returns the new subtotal. Tax / service /
-    discount stay 0 (D1 undecided)."""
+    recompute totals. Returns the new subtotal. Tax follows the
+    config effective NOW (Stage 7, D1): while the bill is issued
+    it regenerates with the current config; at the freeze point
+    the snapshot columns are set and totals stop moving."""
+    from app.services.tax_service import active_tax_config, compute_tax
+
     db.execute(delete(BillItem).where(BillItem.bill_id == bill.id))
     subtotal = 0
     for item in items:
@@ -387,11 +418,39 @@ def _build_lines(db: Session, bill: Bill, items: list[OrderItem]) -> int:
             line_total_paise=line_total,
         ))
     bill.subtotal_paise = subtotal
-    bill.tax_paise = 0
+    tax_paise, total = compute_tax(
+        subtotal, active_tax_config(db, bill.restaurant_id)
+    )
+    bill.tax_paise = tax_paise
     bill.service_charge_paise = 0
     bill.discount_paise = 0
-    bill.total_paise = subtotal
+    bill.total_paise = total
     return subtotal
+
+
+def freeze_tax_on_bill(db: Session, bill: Bill) -> None:
+    """Snapshot the tax policy + computed tax onto the bill at the
+    freeze point. Idempotent: a bill that already has a snapshot
+    (or was frozen unconfigured) is left alone — later config
+    changes never alter a frozen/paid bill."""
+    from app.services.tax_service import (
+        active_tax_config,
+        compute_tax,
+        tax_snapshot_fields,
+    )
+
+    if bill.status != "issued":
+        # Only an issued bill can be frozen: a payment_requested
+        # bill is already frozen (even when it froze unconfigured,
+        # whose snapshot columns are NULL by design), and terminal
+        # bills never move again.
+        return
+    config = active_tax_config(db, bill.restaurant_id)
+    tax_paise, total = compute_tax(bill.subtotal_paise, config)
+    bill.tax_paise = tax_paise
+    bill.total_paise = total
+    for key, value in tax_snapshot_fields(config).items():
+        setattr(bill, key, value)
 
 
 def _regenerate_issued_bill(db: Session, bill: Bill) -> Bill | None:
@@ -444,7 +503,7 @@ def _most_recent_paid_bill(db: Session, session_id: UUID) -> Bill | None:
             select(Bill)
             .where(
                 Bill.table_session_id == session_id,
-                Bill.status == "paid",
+                Bill.status.in_(("paid", "refunded", "partially_refunded")),
             )
             .order_by(Bill.paid_at.desc(), Bill.issued_at.desc())
         )
@@ -545,6 +604,10 @@ def request_payment(db: Session, ctx: GuestContext) -> tuple[BillOut, bool]:
         raise ApiError(404, "bill_not_found", "No bill exists for this table yet.")
     if bill.status == "payment_requested":
         return _bill_out(db, bill), False
+    # Stage 7 freeze point: snapshot the tax policy + computed
+    # tax onto the bill now, BEFORE the status flips (freeze only
+    # applies to an issued bill); later config changes never alter it.
+    freeze_tax_on_bill(db, bill)
     bill.status = "payment_requested"
     bill.payment_requested_at = _now()
     bill.version += 1
@@ -632,7 +695,7 @@ def get_receipt_for_guest(db: Session, ctx: GuestContext) -> ReceiptOut:
     )
     if bill is None:
         raise ApiError(404, "bill_not_found", "No bill exists for this table yet.")
-    if bill.status != "paid":
+    if bill.status not in ("paid", "refunded", "partially_refunded"):
         raise ApiError(
             409,
             "receipt_not_available",
@@ -898,6 +961,7 @@ def record_payment(
     bill_id: UUID,
     request: PaymentCreateRequest,
     idempotency_key: str,
+    collected_by: UUID | None = None,
 ) -> tuple[dict, int, bool, dict | None]:
     """POST /staff/bills/:id/payments — single transaction, same
     pattern as order placement (Stage 3.2): claim + payment +
@@ -913,7 +977,8 @@ def record_payment(
 
     for _ in range(PAYMENT_MAX_CLAIM_ATTEMPTS):
         outcome = _record_payment_once(
-            db, restaurant_id, bill_id, request, request_hash, idempotency_key
+            db, restaurant_id, bill_id, request, request_hash, idempotency_key,
+            collected_by=collected_by,
         )
         if outcome is not None:
             return outcome
@@ -927,6 +992,7 @@ def _record_payment_once(
     request: PaymentCreateRequest,
     request_hash: str,
     idempotency_key: str,
+    collected_by: UUID | None = None,
 ) -> tuple[dict, int, bool, dict | None] | None:
     """One payment attempt, entirely in ONE transaction.
 
@@ -1040,6 +1106,13 @@ def _record_payment_once(
                 {"status": bill.status},
             )
 
+        # Stage 7 freeze: a bill paid without a prior
+        # payment_requested transition freezes its tax now, BEFORE
+        # the amount-due check, so the payment validates against
+        # the frozen total. (A payment_requested bill is already
+        # frozen — freeze_tax_on_bill is a no-op for it.)
+        freeze_tax_on_bill(db, bill)
+
         splits = (
             db.execute(
                 select(BillSplit)
@@ -1117,7 +1190,7 @@ def _record_payment_once(
             method="cash",
             idempotency_key=idempotency_key,
             amount_paise=request.amount_paise,
-            collected_by=None,  # Decision 5: no users system yet.
+            collected_by=collected_by,  # Stage 7: JWT user id, else NULL.
             collected_at=_now(),
             change_due_paise=0,  # Decision 9 (D9): no change handling.
             status="confirmed",
@@ -1126,6 +1199,25 @@ def _record_payment_once(
         )
         db.add(payment)
         db.flush()
+        # Stage 7 § I: a cash payment is a sensitive action — record
+        # it in the same transaction as the payment, so a failed
+        # payment never leaves a false success record (and a replay
+        # writes nothing new: this code only runs for a fresh payment).
+        write_audit(
+            db,
+            restaurant_id=restaurant_id,
+            branch_id=bill.branch_id,
+            action="payment.recorded",
+            actor_user_id=collected_by,
+            entity_type="payment",
+            entity_id=payment.id,
+            details={
+                "bill_id": str(bill.id),
+                "bill_number": bill.bill_number,
+                "amount_paise": payment.amount_paise,
+                "receipt_number": payment.receipt_number,
+            },
+        )
         bill.amount_paid_paise += request.amount_paise
         fully_paid = False
         if target_split is not None:

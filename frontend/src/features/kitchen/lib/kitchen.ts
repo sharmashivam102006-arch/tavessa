@@ -50,12 +50,16 @@ export function buildKitchenWsUrl(options: {
   /** window.location.origin in the browser; explicit in tests. */
   pageOrigin: string;
   restaurantId: string;
-  devKey: string;
+  /** Dev-only key (DEV builds only). */
+  devKey?: string;
+  /** Single-use Stage 7 ticket (production builds). */
+  ticket?: string;
 }): string {
   const params = new URLSearchParams({
     restaurant_id: options.restaurantId,
-    dev_key: options.devKey,
   });
+  if (options.ticket) params.set("ticket", options.ticket);
+  if (options.devKey) params.set("dev_key", options.devKey);
   const path = `/ws/kitchen?${params}`;
   if (options.apiBase) {
     const base = options.apiBase.replace(/^http/, "ws").replace(/\/$/, "");

@@ -51,9 +51,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 from app.models.common import IdMixin, TimestampMixin
 
-BILL_STATUSES = ("issued", "payment_requested", "paid")
+BILL_STATUSES = ("issued", "payment_requested", "paid", "voided", "refunded", "partially_refunded")
 BILL_SPLIT_STATUSES = ("unpaid", "payment_requested", "paid")
-PAYMENT_STATUSES = ("confirmed",)
+PAYMENT_STATUSES = ("confirmed", "refunded", "partially_refunded")
 
 
 class Bill(IdMixin, TimestampMixin, Base):
@@ -91,6 +91,20 @@ class Bill(IdMixin, TimestampMixin, Base):
     )
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Stage 7 — void + tax freeze point. A voided bill keeps its
+    # rows (it is never deleted) and its items become billable
+    # again (see billing_service._billable_order_items).
+    voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    void_reason: Mapped[str | None] = mapped_column(Text)
+    voided_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    # Tax snapshot, taken at the freeze point (issued ->
+    # payment_requested, or at payment when a bill is paid without
+    # a request). NULL = tax was unconfigured at freeze. Frozen /
+    # paid bills are preserved exactly — later tax config changes
+    # never alter them.
+    tax_rate_bps_snapshot: Mapped[int | None] = mapped_column(Integer)
+    tax_mode_snapshot: Mapped[str | None] = mapped_column(Text)
+    tax_label_snapshot: Mapped[str | None] = mapped_column(Text)
 
     items: Mapped[list["BillItem"]] = relationship(
         "BillItem", back_populates="bill", cascade="all, delete-orphan"
@@ -107,7 +121,7 @@ class Bill(IdMixin, TimestampMixin, Base):
             "restaurant_id", "bill_number", name="uq_bills_restaurant_number"
         ),
         CheckConstraint(
-            "status IN ('issued', 'payment_requested', 'paid')",
+            "status IN ('issued', 'payment_requested', 'paid', 'voided', 'refunded', 'partially_refunded')",
             name="bill_status_valid",
         ),
         CheckConstraint("subtotal_paise >= 0", name="bill_subtotal_non_negative"),
@@ -245,7 +259,8 @@ class Payment(IdMixin, TimestampMixin, Base):
             "change_due_paise >= 0", name="payment_change_due_non_negative"
         ),
         CheckConstraint(
-            "status IN ('confirmed')", name="payment_status_valid"
+            "status IN ('confirmed', 'refunded', 'partially_refunded')",
+            name="payment_status_valid",
         ),
         UniqueConstraint(
             "restaurant_id", "receipt_number",

@@ -9,6 +9,7 @@
  * In production these endpoints return 503 until staff auth lands.
  */
 import { api, createIdempotencyKey } from "@/shared/api/client";
+import { useAuthStore } from "@/shared/stores/authStore";
 import type {
   Bill,
   KitchenOrder,
@@ -26,14 +27,21 @@ import type {
 
 const V1 = "/api/v1";
 
-/** The dev key, or undefined when it is not configured. */
+/** The dev key, or undefined when it is not configured.
+ *
+ * Stage 7: dev keys are sent ONLY in DEV builds — the code is
+ * gated so a production build never includes or sends them. In
+ * production the kitchen/staff pages require a JWT login instead.
+ */
 export function getStaffDevKey(): string | undefined {
+  if (!import.meta.env.DEV) return undefined;
   const key = import.meta.env.VITE_STAFF_DEV_KEY as string | undefined;
   return key && key.trim() !== "" ? key : undefined;
 }
 
 export function isStaffConfigured(): boolean {
-  return getStaffDevKey() !== undefined;
+  if (import.meta.env.DEV) return getStaffDevKey() !== undefined;
+  return useAuthStore.getState().accessToken !== null;
 }
 
 function staffHeaders(): Record<string, string> {

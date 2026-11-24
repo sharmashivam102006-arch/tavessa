@@ -11,6 +11,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { fetchWsTicket } from "@/features/admin/api/adminApi";
 import {
   acknowledgeHelpCall,
   fetchStaffBill,
@@ -297,13 +298,13 @@ export function useStaffSocket(
   useEffect(() => {
     onEventRef.current = options?.onEvent;
   });
-  // Without a restaurant or a dev key there is no socket to open;
-  // the reported status is offline without an effect setState.
-  const disabled = !restaurantId || !getStaffDevKey();
+  // Without a restaurant or auth (dev key in DEV, JWT in
+  // production) there is no socket to open; the reported status
+  // is offline without an effect setState.
+  const disabled = !restaurantId || !isStaffConfigured();
 
   useEffect(() => {
-    const devKey = getStaffDevKey();
-    if (!restaurantId || !devKey) {
+    if (!restaurantId || !isStaffConfigured()) {
       return undefined;
     }
     let socket: WebSocket | undefined;
@@ -330,15 +331,40 @@ export function useStaffSocket(
       });
     };
 
-    const connect = () => {
+    const connect = async () => {
       if (closed) return;
       setConnection(attemptRef.current === 0 ? "connecting" : "reconnecting");
-      const url = buildStaffWsUrl({
-        apiBase: API_BASE,
-        pageOrigin: window.location.origin,
-        restaurantId,
-        devKey,
-      });
+      // A ticket is single-use, so every (re)connect fetches a
+      // fresh one in production; in DEV the dev key is used.
+      let url: string;
+      if (import.meta.env.DEV) {
+        const devKey = getStaffDevKey();
+        if (!devKey) return;
+        url = buildStaffWsUrl({
+          apiBase: API_BASE,
+          pageOrigin: window.location.origin,
+          restaurantId,
+          devKey,
+        });
+      } else {
+        try {
+          const ticket = await fetchWsTicket("staff");
+          if (closed) return;
+          url = buildStaffWsUrl({
+            apiBase: API_BASE,
+            pageOrigin: window.location.origin,
+            restaurantId,
+            ticket: ticket.ticket,
+          });
+        } catch {
+          if (closed) return;
+          const delay = nextBackoffDelayMs(attemptRef.current);
+          attemptRef.current += 1;
+          setConnection("reconnecting");
+          timerRef.current = setTimeout(() => void connect(), delay);
+          return;
+        }
+      }
       socket = new WebSocket(url);
       socket.onopen = () => {
         if (closed) return;
@@ -361,7 +387,7 @@ export function useStaffSocket(
         const delay = nextBackoffDelayMs(attemptRef.current);
         attemptRef.current += 1;
         setConnection("reconnecting");
-        timerRef.current = setTimeout(connect, delay);
+        timerRef.current = setTimeout(() => void connect(), delay);
       };
       socket.onerror = () => {
         // onclose follows and schedules the reconnect.
@@ -370,7 +396,7 @@ export function useStaffSocket(
     };
 
     attemptRef.current = 0;
-    connect();
+    void connect();
     return () => {
       closed = true;
       if (timerRef.current !== undefined) clearTimeout(timerRef.current);

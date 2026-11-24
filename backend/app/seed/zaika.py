@@ -82,9 +82,12 @@ def seed_zaika(db: Session) -> dict:
             name="Zaika — MG Road",
             slug=BRANCH_SLUG,
             address=rest_data["address"],
+            timezone="Asia/Kolkata",
         )
         db.add(branch)
         db.flush()
+    elif not branch.timezone:
+        branch.timezone = "Asia/Kolkata"
 
     for number in TABLE_NUMBERS:
         table = (

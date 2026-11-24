@@ -776,6 +776,8 @@ def test_guest_token_cannot_confirm_payment(client, setup):
 
 
 def test_staff_bills_require_dev_key_and_production_503(client, setup):
+    # Stage 7: production no longer returns 503 — JWT is required
+    # and the dev key is NEVER accepted there (401).
     assert client.get("/api/v1/staff/bills").status_code == 401
     assert client.get(
         "/api/v1/staff/bills", headers=staff_headers("wrong")
@@ -784,8 +786,8 @@ def test_staff_bills_require_dev_key_and_production_503(client, setup):
     settings.environment = "production"
     try:
         response = client.get("/api/v1/staff/bills", headers=staff_headers())
-        assert response.status_code == 503, response.text
-        assert response.json()["error"]["code"] == "staff_auth_not_configured"
+        assert response.status_code == 401, response.text
+        assert response.json()["error"]["code"] == "unauthenticated"
     finally:
         settings.environment = previous
 

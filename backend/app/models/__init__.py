@@ -11,6 +11,14 @@ from app.models.order import Order, OrderItem, OrderItemAddon  # noqa: F401
 from app.models.support import HelpCall  # noqa: F401
 from app.models.idempotency import IdempotencyKey  # noqa: F401
 from app.models.billing import Bill, BillItem, BillSplit, Payment  # noqa: F401
+from app.auth.models import (  # noqa: F401
+    AuditLog,
+    RefreshSession,
+    Refund,
+    TaxConfiguration,
+    User,
+    WsTicket,
+)
 
 __all__ = [
     "Branch",
@@ -31,4 +39,10 @@ __all__ = [
     "BillItem",
     "BillSplit",
     "Payment",
+    "User",
+    "RefreshSession",
+    "WsTicket",
+    "TaxConfiguration",
+    "Refund",
+    "AuditLog",
 ]

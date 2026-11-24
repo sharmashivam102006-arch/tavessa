@@ -73,6 +73,11 @@ class BillOut(CamelModel):
     payment_requested_at: datetime | None = None
     paid_at: datetime | None = None
     version: int
+    voided_at: datetime | None = None
+    void_reason: str | None = None
+    tax_rate_bps_snapshot: int | None = None
+    tax_mode_snapshot: str | None = None
+    tax_label_snapshot: str | None = None
 
 
 class BillDataResponse(CamelModel):
@@ -170,6 +175,9 @@ class ReceiptOut(CamelModel):
     subtotal_paise: int
     tax_paise: int
     tax_status: str = "Tax: not configured — no tax rate has been set for this restaurant"
+    tax_rate_bps_snapshot: int | None = None
+    tax_mode_snapshot: str | None = None
+    tax_label_snapshot: str | None = None
     total_paise: int
     amount_received_paise: int
     outstanding_paise: int

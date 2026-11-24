@@ -14,32 +14,23 @@ The first demonstration restaurant is **Zaika**. The architecture is SaaS-ready:
 every tenant-scoped record belongs to a restaurant, so a second restaurant can be
 added without a schema redesign.
 
-> **Status: Stage 6 complete (Billing and cash collection) — 23 Nov 2026.** Blueprint + project foundation
-> are done and verified (see "Development setup" below). Stage 2 built the
-> guest interface & digital menu for Zaika as a frontend against the API
-> contract in `docs/api-plan.md`, using clearly-marked sample menu data.
-> Stage 3 wired the guest backend behind it: PostgreSQL models + migration,
-> Zaika seed (6 categories, 24 items), QR-token sessions, menu, orders
-> (server-priced, idempotent), help calls — all verified live against a
-> real PostgreSQL. The sample menu is now used only for the `/t/demo`
-> preview; real table tokens use the real API. Stage 4 added the Kitchen
-> Display System: order-level kitchen API, `order.created` /
-> `order.status_changed` WebSocket events, and the `/kitchen` board
-> (New / Preparing / Ready, ticking elapsed times). Stage 5 added the
-> Waiter / Staff dashboard: floor grid, active orders, serving
-> (ready → served), help calls (acknowledge → resolve), and the
-> `/ws/staff` channel — all dev-key gated, no production login yet.
+> **Status: Stage 7 complete (Owner/Admin dashboard — auth, users, menu, tax, voids, refunds, audit log) — 24 Nov 2026.**
 > Stage 6 added billing and cash collection: server-priced bills from
-> order snapshots (integer paise, tax shown as "not configured" — D1 is
-> still undecided), equal/custom splits, guest Pay by Cash (which creates
-> no payment), staff cash confirmation in one idempotent transaction
-> (receipt `R-YYYY-MM-DD-NNN`, `bill.created` / `bill.requested` /
-> `payment.recorded` / `bill.paid` on the staff channel), and receipts in
-> both UIs. Cash only — no UPI, cards, gateways or online payments.
-> Refunds, bill void, the daily cash report and owner history are
-> deferred to Stage 7 (they need owner auth). The owner/admin dashboard
-> is still a route shell, and there are no reviews or staff login yet
-> (Stages 7–8).
+> order snapshots (integer paise), equal/custom splits, guest Pay by
+> Cash (which creates no payment), staff cash confirmation in one
+> idempotent transaction (receipt `R-YYYY-MM-DD-NNN`, `bill.created` /
+> `bill.requested` / `payment.recorded` / `bill.paid` on the staff
+> channel), and receipts in both UIs. Cash only — no UPI, cards,
+> gateways or online payments. Stage 7 added password authentication
+> (JWT access + rotating refresh tokens, Argon2id, bootstrap CLI),
+> the owner/admin dashboard at `/admin` (overview, orders, menu,
+> staff, tables, bills, cash reports, refunds, audit log, settings),
+> tax configuration (D1 decided — owner-set rate, snapshotted at the
+> bill freeze point), bill void and cash refunds (idempotent), and an
+> append-only audit log. Staff and kitchen pages now log in at
+> `/login` in production builds; dev keys work only in development.
+> Screenshots: `docs/stage7-screenshots/`. There are still no reviews
+> (D6 deferred) and no guest live tracking (Stage 8).
 > Do not treat any endpoint, screen, or workflow in these docs as
 > shipped until its stage in `docs/development-roadmap.md` is
 > marked complete and verified.
@@ -79,6 +70,34 @@ uvicorn app.main:app --reload --port 8000
 # Health: curl http://localhost:8000/api/v1/health
 # Docs:   http://localhost:8000/docs (dev only)
 ```
+
+### Owner login (Stage 7)
+
+There is no public sign-up and no default password. Create the first
+owner with the bootstrap CLI (it prompts for the password twice via
+`getpass` — never in argv or logs — and refuses if an owner already
+exists for the restaurant):
+
+```bash
+cd backend
+python -m app.auth.bootstrap --restaurant-slug zaika --email owner@zaika.example
+```
+
+Then open http://localhost:5173/login and sign in. The access token
+lives in memory only (never `localStorage`); the refresh token is an
+HttpOnly cookie handled by the browser. Owners land on `/admin`,
+waiters on `/staff`, kitchen users on `/kitchen`. New users created in
+`/admin` → Staff must change their password on first login. Deactivated
+users are locked out immediately on every endpoint.
+
+**Tax (D1, decided in Stage 7):** a restaurant starts with tax
+**unconfigured** — that is not a 0% rate. The owner sets a rate in
+`/admin` → Settings → Tax configuration (rate, inclusive/exclusive,
+label, effective from now). Bills recompute with the current config
+while `issued`; once a bill reaches `payment_requested` (or is paid),
+its tax is snapshotted and never changes. Tavessa claims no tax
+compliance — the UI says so; confirm the rate and mode with your
+accountant.
 
 #### Trying the guest endpoints (dev)
 
@@ -122,20 +141,25 @@ curl -X POST http://localhost:8000/api/v1/guest/help-calls \
 Unknown token → `401 {"error":{"code":"invalid_table_token",…}}`;
 revoked/expired token → `410 {"error":{"code":"session_expired",…}}`;
 another session's order → `404` (not `403`).
-Tests: `pytest -q` in `backend/` (SQLite in-memory; 87 passed / 1 skipped
-after Stage 5) — plus a real-Postgres check via `alembic upgrade head`
-against a local PostgreSQL before claiming the migration works.
+Tests: `pytest -q` in `backend/` (SQLite in-memory; 164 passed / 1 skipped
+after Stage 7) — plus real-Postgres checks (`backend/scripts/
+verify_stage7_migration.py` 14/14, `verify_stage7_live.py` 37/37) and
+`npm test -- --run` in `frontend/` (100 passed). Run the migration
+check via `alembic upgrade head` against a real PostgreSQL before
+claiming the migration works.
 
-### Waiter / Staff dashboard (Stage 5 — development access only)
+### Waiter / Staff dashboard (Stage 7 — login; dev key in dev only)
 
-> **The staff board is development-access only until staff auth lands.**
-> Staff endpoints require a shared dev key, not a staff login. There is
-> NO `/login` implementation, no users table, no JWT issuance in Stage 5.
-> In production they return `503 {"error":{"code":
-> "staff_auth_not_configured",…}}` and the WebSocket closes with
-> code 4403. Do not expose the staff board publicly on the dev key.
-> A guest table token does NOT grant staff access; the kitchen dev
-> key does NOT grant staff access (and vice versa).
+> **Staff auth landed in Stage 7.** In production, staff endpoints
+> require a JWT (`Authorization: Bearer …` — sign in at `/login` as a
+> waiter) and the WebSocket needs a ticket from
+> `POST /api/v1/ws/tickets`; dev keys are NEVER accepted and return
+> `401 {"error":{"code":"unauthenticated",…}}` (the Stage 4/5 `503`
+> `staff_auth_not_configured` is gone). In development the shared dev
+> key still works, and a JWT is accepted too. Do not expose the staff
+> board publicly on the dev key. A guest table token does NOT grant
+> staff access; the kitchen dev key does NOT grant staff access (and
+> vice versa).
 
 ```bash
 # .env (backend) and frontend/.env must carry the SAME key:
@@ -182,13 +206,15 @@ http://localhost:5173/staff?demo=1. Screenshots:
 close, table-status transitions, staff assignments, payroll —
 see `docs/development-roadmap.md` Stage 5 report.
 
-### Kitchen Display System (Stage 4 — development access only)
+### Kitchen Display System (Stage 7 — login; dev key in dev only)
 
-> **The KDS is development-access only until staff auth lands.**
-> Kitchen endpoints require a shared dev key, not a staff login.
-> In production they return `503 {"error":{"code":
-> "kitchen_auth_not_configured",…}}` and the WebSocket closes with
-> code 4403. Do not expose the KDS publicly on the dev key.
+> **Kitchen auth landed in Stage 7.** In production, kitchen endpoints
+> require a JWT (sign in at `/login` as a kitchen user) and the
+> WebSocket needs a ticket from `POST /api/v1/ws/tickets`; dev keys
+> are NEVER accepted and return `401` (the Stage 4/5 `503`
+> `kitchen_auth_not_configured` is gone). In development the shared
+> dev key still works, and a JWT is accepted too. Do not expose the
+> KDS publicly on the dev key.
 
 ```bash
 # .env (backend) and frontend/.env must carry the SAME key:

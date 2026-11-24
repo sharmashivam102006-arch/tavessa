@@ -1,12 +1,11 @@
 """Staff routes — the waiter dashboard API (api-plan.md §§ 4.2, 5
 as built in Stage 5).
 
-DEV-ONLY ACCESS: every route here requires ``require_staff_dev_access``
-(see ``core/deps.py``) — a SEPARATE dev key from the kitchen key, in
-production these routes return 503 ``staff_auth_not_configured``
-until staff auth lands. A guest table token grants nothing here, and
-a kitchen dev key does not grant staff access either. Guest token
-security is untouched by this module: guest endpoints are unchanged.
+ACCESS (Stage 7): ``require_staff_access`` — production requires
+a JWT (waiter/owner/manager); non-production also accepts the dev
+key. A guest table token grants nothing here, and a kitchen dev key
+does not grant staff access either. Guest token security is
+untouched by this module: guest endpoints are unchanged.
 
 Scope (Stage 5): floor overview (read), active orders (read), serve
 (ready -> served), help-call list / acknowledge / resolve. No billing,
@@ -28,7 +27,9 @@ from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from app.core.deps import get_db, require_staff_dev_access
+from app.auth.deps import require_staff_access
+from app.auth.models import User
+from app.core.deps import get_db
 from app.core.errors import ApiError
 from app.core.rate_limit import STAFF_PATCH_LIMIT, limiter
 from app.realtime.manager import manager
@@ -52,8 +53,16 @@ from app.services import billing_service, staff_service
 from app.services.kitchen_service import resolve_restaurant
 
 router = APIRouter(
-    tags=["staff"], dependencies=[Depends(require_staff_dev_access)]
+    tags=["staff"], dependencies=[Depends(require_staff_access)]
 )
+
+
+def _resolve_restaurant(db: Session, user: User | None, restaurant_id: UUID | None):
+    """Resolve + scope: a JWT user may only access their own restaurant."""
+    restaurant = resolve_restaurant(db, restaurant_id)
+    if user is not None and restaurant.id != user.restaurant_id:
+        raise ApiError(404, "not_found", "Restaurant not found.")
+    return restaurant
 
 
 @router.get("/staff/restaurants", response_model=StaffRestaurantsResponse)
@@ -68,10 +77,11 @@ def list_staff_restaurants(db: Session = Depends(get_db)):
 def list_staff_tables(
     restaurant_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
+    user: User | None = Depends(require_staff_access),
 ):
     """The floor grid: every table with its live operational state
     (session, order counts, ready flag, open help-call flag)."""
-    restaurant = resolve_restaurant(db, restaurant_id)
+    restaurant = _resolve_restaurant(db, user, restaurant_id)
     return StaffTableListResponse(
         data=staff_service.list_tables(db, restaurant.id)
     )
@@ -84,11 +94,12 @@ def get_staff_table(
     table_id: UUID,
     restaurant_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
+    user: User | None = Depends(require_staff_access),
 ):
     """One table: its floor-grid row, its active session's orders
     (full snapshots, most recent first), and its open help calls.
     Unknown table or wrong restaurant -> 404."""
-    restaurant = resolve_restaurant(db, restaurant_id)
+    restaurant = _resolve_restaurant(db, user, restaurant_id)
     return StaffTableDetailResponse(
         data=staff_service.get_table_detail(db, restaurant.id, table_id)
     )
@@ -101,11 +112,12 @@ def list_staff_orders(
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
+    user: User | None = Depends(require_staff_access),
 ):
     """Active orders across the branch, oldest first. ``status``
     takes a single active order status (placed / accepted /
     preparing / ready); no filter returns all active orders."""
-    restaurant = resolve_restaurant(db, restaurant_id)
+    restaurant = _resolve_restaurant(db, user, restaurant_id)
     return staff_service.list_staff_orders(
         db, restaurant.id, status, page, per_page
     )
@@ -118,12 +130,13 @@ async def serve_staff_order(
     order_id: UUID,
     restaurant_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
+    user: User | None = Depends(require_staff_access),
 ):
     """Mark a ready order served. Only ready -> served; anything else
     -> 409 with state unchanged. Serving does NOT close the session
     and does NOT change the table status. ``order.status_changed``
     is broadcast only after the commit."""
-    restaurant = resolve_restaurant(db, restaurant_id)
+    restaurant = _resolve_restaurant(db, user, restaurant_id)
     out, order = staff_service.serve_order(db, restaurant.id, order_id)
     await manager.broadcast(
         order.restaurant_id,
@@ -146,10 +159,11 @@ def list_staff_help_calls(
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
+    user: User | None = Depends(require_staff_access),
 ):
     """Help calls for the restaurant, oldest first. Default (no
     filter) = unresolved only (open + acknowledged)."""
-    restaurant = resolve_restaurant(db, restaurant_id)
+    restaurant = _resolve_restaurant(db, user, restaurant_id)
     return staff_service.list_help_calls(
         db, restaurant.id, status, page, per_page
     )
@@ -172,11 +186,12 @@ def list_staff_bills(
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
+    user: User | None = Depends(require_staff_access),
 ):
     """Bill queue: payment_requested first, then issued, newest
     first. Each row carries table, bill number, totals, outstanding
     and request time."""
-    restaurant = resolve_restaurant(db, restaurant_id)
+    restaurant = _resolve_restaurant(db, user, restaurant_id)
     return billing_service.list_bills(
         db, restaurant.id, status, table_id, page, per_page
     )
@@ -187,11 +202,12 @@ def get_staff_bill(
     bill_id: UUID,
     restaurant_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
+    user: User | None = Depends(require_staff_access),
 ):
     """Full bill: items, splits, payment history, totals,
     outstanding, table/session info. Unknown id or wrong
     restaurant -> 404."""
-    restaurant = resolve_restaurant(db, restaurant_id)
+    restaurant = _resolve_restaurant(db, user, restaurant_id)
     return BillDataResponse(
         data=billing_service.get_staff_bill(db, restaurant.id, bill_id)
     )
@@ -206,6 +222,7 @@ async def record_staff_payment(
     restaurant_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User | None = Depends(require_staff_access),
 ) -> JSONResponse:
     """Confirm cash collection for a bill (or one split). Cash only:
     ``method`` is not accepted from the client except as 'cash'
@@ -221,9 +238,10 @@ async def record_staff_payment(
             "Idempotency-Key header is required for payment confirmation.",
             {"field": "Idempotency-Key"},
         )
-    restaurant = resolve_restaurant(db, restaurant_id)
+    restaurant = _resolve_restaurant(db, user, restaurant_id)
     response_body, status, replayed, event = billing_service.record_payment(
-        db, restaurant.id, bill_id, body, idempotency_key
+        db, restaurant.id, bill_id, body, idempotency_key,
+        collected_by=user.id if user is not None else None,
     )
     if event is not None:
         await manager.broadcast(
@@ -264,9 +282,10 @@ def list_staff_bill_payments(
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
+    user: User | None = Depends(require_staff_access),
 ):
     """Payment history for a bill, newest first."""
-    restaurant = resolve_restaurant(db, restaurant_id)
+    restaurant = _resolve_restaurant(db, user, restaurant_id)
     return billing_service.list_staff_payments(
         db, restaurant.id, bill_id, page, per_page
     )
@@ -277,10 +296,11 @@ def get_staff_bill_receipt(
     bill_id: UUID,
     restaurant_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
+    user: User | None = Depends(require_staff_access),
 ):
     """Receipt data — only after the bill is paid, else 409
     ``receipt_not_available``."""
-    restaurant = resolve_restaurant(db, restaurant_id)
+    restaurant = _resolve_restaurant(db, user, restaurant_id)
     return ReceiptDataResponse(
         data=billing_service.get_staff_receipt(db, restaurant.id, bill_id)
     )
@@ -296,11 +316,12 @@ async def acknowledge_staff_help_call(
     call_id: UUID,
     restaurant_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
+    user: User | None = Depends(require_staff_access),
 ):
     """Acknowledge a help call: open -> acknowledged ONLY. Anything
     else -> 409 with state unchanged. ``help_call.acknowledged`` is
     broadcast only after the commit."""
-    restaurant = resolve_restaurant(db, restaurant_id)
+    restaurant = _resolve_restaurant(db, user, restaurant_id)
     out, call = staff_service.acknowledge_help_call(
         db, restaurant.id, call_id
     )
@@ -328,12 +349,13 @@ async def resolve_staff_help_call(
     call_id: UUID,
     restaurant_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
+    user: User | None = Depends(require_staff_access),
 ):
     """Resolve a help call: acknowledged -> resolved ONLY (a waiter
     must acknowledge first). Anything else -> 409 with state
     unchanged. ``help_call.resolved`` is broadcast only after the
     commit."""
-    restaurant = resolve_restaurant(db, restaurant_id)
+    restaurant = _resolve_restaurant(db, user, restaurant_id)
     out, call = staff_service.resolve_help_call(db, restaurant.id, call_id)
     await manager.broadcast(
         call.restaurant_id,

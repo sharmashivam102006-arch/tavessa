@@ -7,8 +7,15 @@
  * - Never sends prices/totals: the backend recomputes them (Stage 3+).
  * - Per-request headers (Stage 2): pass `headers` for X-Table-Token
  *   and Idempotency-Key — see guestApi.ts for the call sites.
+ * - Stage 7 auth: attaches the in-memory Bearer token when present
+ *   and sends cookies (the HttpOnly refresh cookie) on every
+ *   request. On a 401 from an authenticated call it tries ONE
+ *   silent refresh (POST /api/v1/auth/refresh) and retries once;
+ *   if the refresh fails the auth state is cleared and the caller
+ *   gets the 401 (route guards redirect to /login).
  */
 import type { ApiErrorBody } from "./types";
+import { useAuthStore, type AuthUser } from "@/shared/stores/authStore";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
 
@@ -25,6 +32,38 @@ export class ApiError extends Error {
 
 export interface RequestOptions {
   headers?: Record<string, string>;
+  /** Skip the silent-refresh retry (used by the refresh call itself). */
+  noRefresh?: boolean;
+}
+
+let refreshInFlight: Promise<boolean> | null = null;
+
+async function tryRefresh(): Promise<boolean> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/auth/refresh`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!response.ok) return false;
+      const body = (await response.json()) as {
+        data?: { accessToken?: string; user?: AuthUser };
+      };
+      const token = body.data?.accessToken;
+      const user = body.data?.user;
+      if (!token || !user) return false;
+      useAuthStore.getState().setAuth(token, user);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+  return refreshInFlight;
 }
 
 async function request<T>(
@@ -32,14 +71,33 @@ async function request<T>(
   init?: RequestInit,
   options?: RequestOptions,
 ): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-      ...init?.headers,
-    },
-  });
+  const doFetch = async (): Promise<Response> => {
+    const token = useAuthStore.getState().accessToken;
+    return fetch(`${API_BASE}${path}`, {
+      ...init,
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...options?.headers,
+        ...init?.headers,
+      },
+    });
+  };
+
+  let response = await doFetch();
+  if (
+    response.status === 401 &&
+    !options?.noRefresh &&
+    !path.startsWith("/api/v1/auth/") &&
+    useAuthStore.getState().accessToken
+  ) {
+    if (await tryRefresh()) {
+      response = await doFetch();
+    } else {
+      useAuthStore.getState().clearAuth(true);
+    }
+  }
   if (!response.ok) {
     let code = "request_failed";
     let message = `Request failed (${response.status}).`;
@@ -63,6 +121,8 @@ export const api = {
     request<T>(path, { method: "POST", body: JSON.stringify(body ?? {}) }, options),
   patch: <T>(path: string, body?: unknown, options?: RequestOptions) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body ?? {}) }, options),
+  delete: <T>(path: string, options?: RequestOptions) =>
+    request<T>(path, { method: "DELETE" }, options),
 };
 
 /** One UUID per order-placement attempt (api-plan.md § 10).

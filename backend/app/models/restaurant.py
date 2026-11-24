@@ -18,6 +18,8 @@ class Restaurant(IdMixin, TimestampMixin, Base):
     address: Mapped[str | None] = mapped_column(Text)
     opening_hours: Mapped[str | None] = mapped_column(Text)
     phone: Mapped[str | None] = mapped_column(Text)
+    contact_name: Mapped[str | None] = mapped_column(Text)
+    contact_email: Mapped[str | None] = mapped_column(Text)
     rating: Mapped[float | None] = mapped_column(Float)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
     # D1 (tax) undecided: tax is 0 in Stage 3. tax_mode is a placeholder
@@ -49,6 +51,13 @@ class Branch(IdMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     slug: Mapped[str] = mapped_column(Text, nullable=False)
     address: Mapped[str | None] = mapped_column(Text)
+    # Branch-local timezone for dashboard/report date boundaries
+    # (Stage 7). Defaults to Asia/Kolkata for the seeded Zaika
+    # branch; never assume the server timezone.
+    timezone: Mapped[str] = mapped_column(Text, nullable=False, default="Asia/Kolkata")
+    contact_name: Mapped[str | None] = mapped_column(Text)
+    contact_phone: Mapped[str | None] = mapped_column(Text)
+    contact_email: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     restaurant: Mapped["Restaurant"] = relationship("Restaurant", back_populates="branches")

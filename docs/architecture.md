@@ -179,15 +179,19 @@ they share one backend.
   /staff/bills
 /kitchen                  KDS — login required, role kitchen|owner
   /kitchen                (station filter is a query/state, not a route per station)
-/admin                   Owner — login required, role owner|admin
-  /admin                  (overview)
-  /admin/menu
-  /admin/tables
-  /admin/staff
-  /admin/orders
-  /admin/bills
-  /admin/analytics
-  /admin/settings
+/admin                   Owner — login required, role owner|manager
+  /admin                  (overview) — built in Stage 7, with AdminLayout
+  /admin/menu             (categories, items, variants, add-ons)
+  /admin/tables           (list + add; no delete in Stage 7)
+  /admin/staff            (users: create/roles/flags/deactivate/reset-password)
+  /admin/orders           (history + filters)
+  /admin/bills            (history + void)
+  /admin/cash             (daily cash report + CSV)
+  /admin/refunds          (list + create with confirmation)
+  /admin/audit-logs       (read-only list + filters)
+  /admin/settings         (restaurant/branch/tax config + history)
+                          — no /admin/analytics in Stage 7 (deferred: busiest-hours /
+                          by-category depth); no ?demo=1 mode on /admin.
 /login                    Staff/owner login (one page, role decides landing route)
 /                         Redirect: staff → /staff, kitchen → /kitchen,
                           owner → /admin. No public landing page in v1.
@@ -325,6 +329,26 @@ closed immediately.
 > The single-process limitation is unchanged (see § 6.3): events
 > published in one process reach only sockets connected to that
 > process.
+>
+> **Stage 7 status (24 Nov 2026):** both live channels now
+> authenticate by **WS ticket** in production. A client first calls
+> `POST /api/v1/ws/tickets` (JWT) for its channel, then connects with
+> `?ticket=…`. Tickets are stored server-side in `ws_tickets`
+> (SHA-256 hash, single-use, 60 s expiry) — NOT signed JWTs in the
+> URL, because single-use requires server state. Validation: hash
+> lookup, not expired, not used, user still active and still holding
+> the channel permission, restaurant matches; then `used_at` is
+> marked. In dev, `?dev_key=` still works and a JWT is accepted on
+> the REST endpoints too. Close codes: bad/expired/used ticket →
+> 4401; wrong-role ticket or dev key in production → 4403;
+> restaurant mismatch → 4404. The socket is **accepted then
+> closed** with the code (uvicorn turns close-before-accept into a
+> bare HTTP 403). Production REST dev-key behaviour also changed:
+> dev keys are never accepted and return 401 (was 503
+> `*_auth_not_configured` in Stages 4/5). The frontend fetches a
+> fresh ticket on every (re)connect (tickets are single-use) and
+> sends dev keys only when `import.meta.env.DEV` is true, so a
+> production build never includes them.
 
 **Event envelope (all events):**
 
@@ -407,28 +431,39 @@ v1.
 
 ## 8. Authentication and authorisation
 
-### 8.1 Staff / owner (password users)
+### 8.1 Staff / owner (password users) — as built in Stage 7 (24 Nov 2026)
 
-- Passwords hashed with **Argon2id** (preferred) or bcrypt cost 12 — one
-  algorithm, configured in `core/security.py`, never MD5/SHA-1/plaintext.
-  (Argon2id is the recommendation; if the chosen password library in Stage 1
-  makes Argon2id awkward, bcrypt-12 is the accepted fallback — record the
-  choice in Stage 1, do not silently pick.)
-- Login: `POST /auth/login` → short-lived **access token (JWT, 15 min)** +
-  **refresh token (rotating, HttpOnly cookie, 7 days)**. Access tokens are
-  sent as `Authorization: Bearer …`; the frontend keeps the access token in
-  memory (not `localStorage`).
-- JWT claims: `sub` (user id), `restaurant_id`, `role`, `exp`, `jti`.
-  Every request re-validates the user is still active and still belongs to
-  that restaurant (a deactivated staff member's token stops working on the
-  next request after a short cache, not only at expiry — Stage 1 detail).
-- Refresh-token rotation: each refresh issues a new refresh token and revokes
-  the old one; reuse of a revoked token revokes the whole token family
-  (theft detection). This is implemented in Stage 1, not "later".
-- RBAC is enforced by dependencies (`require_role("owner")`,
-  `require_role("waiter", "owner")`, …) on every route, plus a restaurant
-  scope check (`current_user.restaurant_id == resource.restaurant_id`).
-  The frontend hiding a button is never the security control.
+- Passwords hashed with **Argon2id** via `core/security.py`
+  (`hash_password` / `verify_password`) — the Stage 1 choice, confirmed
+  in Stage 7. Never MD5/SHA-1/plaintext, never logged, never returned.
+- Login: `POST /api/v1/auth/login` → short-lived **access token (JWT,
+  15 min, HS256)** + **refresh token (rotating, opaque, HttpOnly
+  cookie, 7 days)**. Access tokens are sent as `Authorization:
+  Bearer …`; the frontend keeps the access token in memory (Zustand
+  store, not `localStorage` — a full page reload logs the user out,
+  by design). Refresh tokens are stored as SHA-256 hashes only.
+- JWT claims: `sub` (user id), `restaurant_id`, `branch_id`, `role`,
+  `exp`, `jti`. **Every request re-validates the user from the
+  database** (`get_current_user` does a DB lookup + `is_active`
+  check), so deactivation is effective immediately on all endpoints,
+  not only at token expiry.
+- Refresh-token rotation: each refresh issues a new refresh token and
+  revokes the old one; reuse of a revoked token revokes the whole
+  token family (theft detection). Logout revokes the presented token;
+  change-password revokes ALL of the user's refresh sessions.
+- Login is rate-limited (10/min/IP, slowapi) and returns a generic 401
+  for wrong credentials and for deactivated accounts alike. The first
+  owner is created only via the bootstrap CLI (`python -m
+  app.auth.bootstrap`, password via getpass twice); there is no public
+  owner-registration endpoint and no hardcoded/default credentials.
+- RBAC is enforced by dependencies (`require_permission(capability)`,
+  `require_role(...)`) on every route — the capability map lives in
+  `backend/app/auth/permissions.py` — plus a restaurant scope check
+  and a branch pin for branch-scoped users. The frontend hiding a
+  button is never the security control.
+- Manager "Configurable" permissions are boolean flags on the user
+  record (`can_manage_staff`, `can_manage_settings`, `can_refund`,
+  `can_void`), default False, toggleable by the owner.
 
 ### 8.2 Guest (QR token — no password)
 
@@ -449,25 +484,34 @@ v1.
   shared, rotation is the remedy; the session-expiry decision (D5 in
   `project-overview.md`) bounds the exposure window.
 
-### 8.3 Authorisation matrix (summary — enforced per endpoint in `api-plan.md`)
+### 8.3 Authorisation matrix (as built in Stage 7 — enforced per endpoint in `api-plan.md` § 2/§ 8)
 
-| Resource | Guest (own session) | Waiter | Kitchen | Owner |
+Capabilities are the keys of `PERMISSIONS` in
+`backend/app/auth/permissions.py`. Owner has all of them. Manager has
+the base set plus whichever of the four flags the owner granted.
+Waiter `view_kitchen` is No in v1 (the brief marked it "Optional").
+
+| Capability | Owner | Manager | Waiter | Kitchen |
 |---|---|---|---|---|
-| Menu (read) | Yes | Yes | Yes | Yes |
-| Menu (write) | No | No | No | Yes |
-| Place order | Yes (own table) | No* | No | No* |
-| Order status (read) | Own session only | Restaurant | Restaurant | Restaurant |
-| Item status (write) | No | Serve only | Prepare/ready | Yes |
-| Help calls | Create own | Accept/resolve | Read | Read |
-| Bill (read) | Own session | Restaurant | No | Restaurant |
-| Bill (create/request) | Yes (own session) | Yes | No | Yes |
-| Payment confirm | No | Yes | No | Yes |
-| Refund | No | No | No | Yes |
-| Staff manage | No | No | No | Yes |
-| Reviews | Create own (after paid) | No | No | Moderate/read |
+| `view_dashboard` | Yes | Yes | No | No |
+| `manage_settings` | Yes | Flag `can_manage_settings` | No | No |
+| `manage_menu` | Yes | Yes | No | No |
+| `manage_staff` | Yes | Flag `can_manage_staff` | No | No |
+| `view_financials` | Yes | Yes | No | No |
+| `confirm_cash` | Yes | Yes | Yes | No |
+| `serve_orders` | Yes | Yes | Yes | No |
+| `update_kitchen` | Yes | Yes | No | Yes |
+| `view_kitchen` | Yes | Yes | No | Yes |
+| `configure_tax` | Yes | **No** | No | No |
+| `issue_refunds` | Yes | Flag `can_refund` | No | No |
+| `void_bills` | Yes | Flag `can_void` | No | No |
 
-\* Waiters/owners placing an order on a guest's behalf is a possible future
-addition, not a v1 capability — do not build it speculatively.
+Guest (own session) is unchanged from the blueprint: menu read, place
+order, own bill read/create/request, help-call create — via the QR
+table token, never a password. Waiters/owners placing an order on a
+guest's behalf is a possible future addition, not a v1 capability — do
+not build it speculatively. Reviews are not built (moderation D6
+deferred).
 
 ## 9. Security — checklist (enforced in Stage 9, designed now)
 
