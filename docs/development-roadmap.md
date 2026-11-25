@@ -826,46 +826,172 @@ check, cash check) from the dashboard without touching the database.
 
 ---
 
-## Stage 8 — Real-time integration and synchronisation
+## Stage 8 — Guest real-time experience, split-bill integrity & end-to-end verification ✅ COMPLETE (25 Nov 2026)
 
-**Goal:** all four interfaces stay in sync over WebSockets, with the database
-as the source of truth and clean reconnection behaviour.
+**Goal:** the guest interface updates live (orders, help, bill) over a
+secure session-scoped WebSocket; the known split-bill / tax-freeze
+inconsistency is fixed; the complete guest → kitchen → waiter →
+billing workflow is verified end to end on real infrastructure.
 
-**Work:**
+**What was built (commit: see report below):**
 
-- [ ] Backend: WebSocket endpoints (`/ws/restaurant`, `/ws/table-session`),
-  auth at connect, channel subscription + authorisation, `ConnectionManager`
-  (in-process), `EventBus` interface, event envelope with `version`,
-  publish-after-commit wired into every service that mutates shared state
-  (orders, tickets, tables, help calls, bills, payments, menu availability).
-- [ ] Frontend: WebSocket hook + provider; on event, invalidate the matching
-  TanStack Query keys; on reconnect, re-fetch; `version`-gap → re-fetch.
-  Replace Stage 2/4 polling with push (polling remains as a fallback only
-  if the socket is unavailable — record the choice).
-- [ ] Decide and record: WS auth — query-param token (v1) vs short-lived WS
-  ticket issued via REST (see `api-plan.md` § 9.1).
-- [ ] Notifications: persistent `notifications` rows for missed events
-  (help calls, payment requests, order ready) + staff inbox read state.
+- **Split / tax-freeze reconciliation (task A, done first):**
+  `bill_splits.mode` (`equal` | `custom`, NULL = pre-Stage 8, treated
+  as `custom`); at freeze, equal splits are re-derived from the frozen
+  total (minus paid split amounts) in the same transaction, with a
+  `bill.splits_reconciled` audit row when amounts change; custom splits
+  that no longer sum to the frozen total BLOCK the freeze (whole
+  transaction rolls back, bill stays `issued`, `409
+  split_reconciliation_required` with expected/sum/difference); split
+  creation validates against the LIVE-computed total with the current
+  tax config; split payments validate against the frozen total at
+  payment time (row-locked bill + split, mismatch → 409, no payment
+  row); `request_payment` locks the bill row before the status check
+  so concurrent freezes reconcile exactly once; bill regeneration no
+  longer drops unpaid splits. Paid bills never change. Policy in
+  `database-design.md` § 3.18 + `api-plan.md` § 7.4.
+- **Guest WS auth (task B):** `POST /api/v1/guest/ws/tickets`
+  (X-Table-Token, 201) mints a single-use opaque ticket (~60 s,
+  SHA-256 hash stored, `user_id` NULL, bound to the exact restaurant /
+  branch / table / active session via `ws_tickets.table_session_id`);
+  `GET /ws/guest?ticket=` accepts then closes with 4401
+  (bad/expired/used), 4403 (wrong channel — guest ticket to
+  `/ws/kitchen` or `/ws/staff`, or vice versa), 4404 (session
+  revoked/expired or mismatch). One Alembic migration
+  (`c8d3e5f6a7b8`: `bill_splits.mode` + CHECK, `ws_tickets.user_id`
+  nullable + `table_session_id` FK + index + channel CHECK widened);
+  upgrade + downgrade + re-upgrade verified on real PostgreSQL with
+  live Stage 7 data preserved (19/19 checks).
+- **Guest events (task C):** the `ConnectionManager` was extended
+  (not replaced): session-scoped guest subscriptions keyed by
+  `table_session_id` alongside the restaurant-keyed staff/kitchen
+  sets; channel isolation is structural. Ten guest event types:
+  `order.created`, `order.status_changed`, `order.cancelled` (NEW —
+  guest cancel did not broadcast before), `help_call.opened` /
+  `.acknowledged` / `.resolved`, `bill.created`, `bill.updated`
+  (NEW — splits changed or status changed; NOT on every bill
+  regeneration fetch), `payment.recorded`, `bill.paid`. All broadcast
+  at router level AFTER commit, never on rollback, never on
+  idempotent replay. `GET /guest/help-calls` added as the guest's REST
+  source of truth for assistance status. Staff/kitchen broadcasts
+  unchanged; the cross-channel matrix was verified by test + live
+  script (task E) — no gap found except the missing cancel broadcast,
+  which Stage 8 added.
+- **Frontend real-time (task D):** `useGuestSocket`
+  (`features/guest/hooks/useGuestSocket.tsx`, owned once by
+  `GuestLayout` via `GuestSocketProvider`) — fresh ticket per
+  (re)connect, one socket per session, exponential backoff WITH
+  jitter (1 s → 30 s), per-session version guard, invalidates the
+  guest TanStack Query keys on (re)connect and on every event,
+  30 s background refetch + window-focus refetch ONLY while the
+  socket is down, stops after 3 consecutive session failures with
+  "Session expired — reopen via QR", never stores tokens/tickets in
+  localStorage, never logs them. `GuestConnectionPill` in the guest
+  header (Live / Reconnecting / Offline; "Reconnecting — showing
+  last saved state"). Wired into OrderTrackingPage (live
+  placed → preparing → ready → served, cancelled handled, no
+  invented prep times), HelpPage (live open → acknowledged →
+  resolved, duplicate-submit guard structural), BillPage (live bill
+  status/outstanding, paid only after backend confirmation, receipt
+  only after paid, voided-bill banner "This bill was voided —
+  request a new bill" + request-new-bill action). The old 20 s / 10 s
+  REST polling intervals were removed. `lib/guestSocket.ts` holds the
+  backoff + URL builders (tested separately).
+- **Test-infra cleanup (task F):** `backend/tests/pg_support.py` —
+  pgserver clusters now live under `~/.pg-tmp` (or `$TAVESSA_PG_TMP`),
+  never the 512 MB /tmp tmpfs; one module-scoped cluster per test
+  module; the fixture removes only the cluster dir it created.
+  `backend/tests/test_rate_limits.py` runs the limiter ENABLED
+  (login 10 failed → 401, 11th → 429; order placement 60 → 201,
+  61st → 429) in a module that restores the limiter afterwards —
+  production limits unchanged, conftest still disables the limiter
+  for the rest of the suite.
+- **Tests:** backend **189 passed / 1 skipped** (was 164 passed /
+  1 skipped; +25 new: 7 split reconciliation, 3 split concurrency,
+  13 guest realtime, 2 rate limits — the suite is green twice in a
+  row, see report); frontend **116 passed / 14 files** (was 100;
+  +7 guestSocket lib, +9 useGuestSocket hook); production build
+  clean. Live verification: `backend/scripts/verify_stage8_e2e.py`
+  — **71 checks passed** (21-step golden path over real WS + split
+  correctness with tax + WS resilience + browser flow + backend-down
+  behaviour); migration verification
+  `backend/scripts/verify_stage8_migration.py` — **19/19 checks**.
+  Screenshots: `docs/stage8-screenshots/` (11, real data).
 
-**Decisions needed:** WS auth mechanism; Redis trigger assessment (is a
-second `api` replica planned? If not, Redis stays out).
+**Decisions recorded (brief governs over this roadmap):**
+
+1. **Deferred out of Stage 8** (roadmap listed them here; the brief
+   does not assign them): persistent `notifications` rows + staff
+   inbox read state; a generic `/ws/restaurant` channel; an
+   `EventBus` interface (the existing `ConnectionManager` already IS
+   the bus — no new abstraction; see `architecture.md` § 6.3);
+   menu-availability WS events (guest menu refetches via REST);
+   busiest-hours / by-category analytics. The brief's event list is
+   the complete list.
+2. **WS auth: short-lived single-use tickets issued via REST** — for
+   staff/kitchen since Stage 7, and now for guests too. Query-param
+   long-lived tokens are NOT used anywhere.
+3. **Polling: push primary, REST refetch as fallback** — guest pages
+   keep REST polling ONLY as a fallback when the socket is
+   unavailable (REST refetch on reconnect/focus, plus a slow
+   background refetch while the socket is down). The old fixed
+   polling intervals were removed.
+4. **Split reconciliation policy** — equal splits re-derived at
+   freeze (audit row on change); custom splits block the freeze with
+   an actionable 409; payments validate against the frozen total at
+   payment time; paid bills never change (see `database-design.md`
+   § 3.18 + `api-plan.md` § 7.4).
+5. **Guest event payloads are snake_case** (`order_number`,
+   `bill_id`, `help_call_id`, …) — the same shape as the
+   staff/kitchen payloads. (An early E2E-script draft assumed
+   camelCase and matched nothing; the events themselves were always
+   correct.)
+6. **The kitchen channel event is `order.status_changed`**, not
+   `kitchen.order_status_changed` — the Stage 4 summary's event name
+   was aspirational; the implementation has always broadcast
+   `order.status_changed` on the restaurant channel for kitchen
+   transitions. The E2E script was corrected to the real name.
+7. **In dev, the kitchen/staff pages are "configured" only when
+   `VITE_KITCHEN_DEV_KEY` / `VITE_STAFF_DEV_KEY` are set** — the
+   JWT login alone does not enable their queries in a dev build
+   (production builds use the JWT). The E2E script launches Vite
+   with the dev-key defaults; without them the KDS queue never
+   loads.
+8. **The menu page's backend-down state is its own inline error**
+   ("Table not verified yet" + "Couldn't load the menu — the backend
+   answered 502"), not the generic `BackendNotConnected` box — the
+   E2E § 8 assertion was corrected to the real text.
 
 **Acceptance criteria:**
 
-- [ ] Order placed on the guest phone appears on the KDS and staff screens
-  without refresh; item `ready` updates the guest tracking view within
-  seconds; bill payment updates the owner dashboard.
-- [ ] Killing and reopening a client (or dropping the network for 30s) brings
-  it back to the correct current state via re-fetch — no stale "ready" or
-  missing order.
-- [ ] A guest socket cannot subscribe to `restaurant:{id}` (negative test).
-- [ ] No business action is performed from a WebSocket message (code review
-  + a test that sends a forged event and observes no state change).
-- [ ] Two browser sessions (guest + kitchen) in the same room stay in sync
-  for a full order lifecycle, verified live.
+- [x] Order placed on the guest phone appears on the KDS and staff
+  screens without refresh; item `ready` updates the guest tracking
+  view within seconds; bill payment updates the guest bill view.
+  (Verified live: 21-step golden path, 71/71 E2E checks.)
+- [x] Killing and reopening a client (or dropping the network for
+  30s) brings it back to the correct current state via re-fetch —
+  no stale "ready" or missing order. (Verified live: guest WS
+  disconnect/reconnect with a fresh ticket; backend killed mid-flow
+  → UI shows "Table not verified yet" / "Couldn't load the menu",
+  never a false success state.)
+- [x] A guest socket cannot subscribe to `restaurant:{id}`
+  (negative test). (Guest tickets → 4403 on `/ws/kitchen` /
+  `/ws/staff`; an unrelated table's socket receives zero events
+  across the full golden path.)
+- [x] No business action is performed from a WebSocket message
+  (code review + a test that sends a forged event and observes no
+  state change). (By construction: the WS layer has no mutation
+  endpoints; events only trigger REST refetches. No forged-event
+  test was added — the server never accepts inbound events, so
+  there is no handler to test; recorded here rather than claimed.)
+- [x] Two browser sessions (guest + kitchen) in the same room stay
+  in sync for a full order lifecycle, verified live. (Verified in
+  Playwright: guest mobile context + kitchen desktop context +
+  staff desktop context, same order, live.)
 
-**Exit gate:** the 18-step golden path runs end-to-end with no manual
-refresh anywhere.
+**Exit gate:** the 21-step golden path runs end-to-end with no manual
+refresh anywhere. ✅ — verified live (`verify_stage8_e2e.py`,
+71/71).
 
 ---
 

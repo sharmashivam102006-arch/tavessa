@@ -14,7 +14,7 @@ The first demonstration restaurant is **Zaika**. The architecture is SaaS-ready:
 every tenant-scoped record belongs to a restaurant, so a second restaurant can be
 added without a schema redesign.
 
-> **Status: Stage 7 complete (Owner/Admin dashboard — auth, users, menu, tax, voids, refunds, audit log) — 24 Nov 2026.**
+> **Status: Stage 8 complete (Guest real-time experience — guest WS tickets, live tracking, split/tax reconciliation) — 25 Nov 2026.**
 > Stage 6 added billing and cash collection: server-priced bills from
 > order snapshots (integer paise), equal/custom splits, guest Pay by
 > Cash (which creates no payment), staff cash confirmation in one
@@ -29,8 +29,14 @@ added without a schema redesign.
 > bill freeze point), bill void and cash refunds (idempotent), and an
 > append-only audit log. Staff and kitchen pages now log in at
 > `/login` in production builds; dev keys work only in development.
-> Screenshots: `docs/stage7-screenshots/`. There are still no reviews
-> (D6 deferred) and no guest live tracking (Stage 8).
+> Stage 8 added the guest WebSocket channel (`/ws/guest`, single-use
+> ticket bound to the table session — live order tracking, help and
+> bill updates with no refresh), fixed the split-bill / tax-freeze
+> inconsistency (equal splits re-derived at freeze, custom splits
+> block the freeze with an actionable 409), and verified the full
+> guest → kitchen → waiter → billing loop end to end (71 live
+> checks). Screenshots: `docs/stage8-screenshots/`. There are still
+> no reviews (D6 deferred).
 > Do not treat any endpoint, screen, or workflow in these docs as
 > shipped until its stage in `docs/development-roadmap.md` is
 > marked complete and verified.
@@ -141,10 +147,10 @@ curl -X POST http://localhost:8000/api/v1/guest/help-calls \
 Unknown token → `401 {"error":{"code":"invalid_table_token",…}}`;
 revoked/expired token → `410 {"error":{"code":"session_expired",…}}`;
 another session's order → `404` (not `403`).
-Tests: `pytest -q` in `backend/` (SQLite in-memory; 164 passed / 1 skipped
-after Stage 7) — plus real-Postgres checks (`backend/scripts/
-verify_stage7_migration.py` 14/14, `verify_stage7_live.py` 37/37) and
-`npm test -- --run` in `frontend/` (100 passed). Run the migration
+Tests: `pytest -q` in `backend/` (SQLite in-memory; 189 passed / 1 skipped
+after Stage 8) — plus real-Postgres checks (`backend/scripts/
+verify_stage8_migration.py` 19/19, `verify_stage8_e2e.py` 71/71) and
+`npm test -- --run` in `frontend/` (116 passed). Run the migration
 check via `alembic upgrade head` against a real PostgreSQL before
 claiming the migration works.
 

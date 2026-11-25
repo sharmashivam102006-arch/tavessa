@@ -20,6 +20,7 @@ import { ApiError, mapSessionError, type SessionErrorKind } from "@/shared/api/c
 import type { GuestMenuResponse, MenuItem } from "@/shared/api/types";
 import {
   fetchGuestBill,
+  fetchGuestHelpCalls,
   fetchGuestMenu,
   fetchGuestOrder,
   fetchGuestOrders,
@@ -136,9 +137,22 @@ export function useGuestOrder(tableToken: string, orderId: string) {
     queryFn: () => fetchGuestOrder(tableToken, orderId),
     retry: false,
     staleTime: 15_000,
-    // Tracking re-fetches via REST (api-plan.md § 9.4); WebSocket
-    // push arrives in Stage 8. Polling is the Stage 2 mechanism.
-    refetchInterval: 20_000,
+    // Live updates arrive over the guest WebSocket (Stage 8):
+    // the socket invalidates this query on order events and on
+    // (re)connect. No interval polling — the socket hook refetches
+    // on a slow interval only while the socket is down.
+  });
+}
+
+/** The session's help calls, newest first (Stage 8). The Help page
+ * refetches this after a socket reconnect; help_call.* events
+ * invalidate it live. */
+export function useGuestHelpCalls(tableToken: string) {
+  return useQuery({
+    queryKey: ["guest-help-calls", tableToken],
+    queryFn: () => fetchGuestHelpCalls(tableToken),
+    retry: false,
+    staleTime: 15_000,
   });
 }
 
@@ -148,13 +162,10 @@ export function useGuestBill(tableToken: string) {
     queryFn: () => fetchGuestBill(tableToken),
     retry: false,
     staleTime: 15_000,
-    // Guest bill updates arrive via REST refetch (Stage 6 decision
-    // 9 — the guest WS channel is Stage 8): re-fetch on focus and
-    // on a short interval while the bill is unpaid, so a staff
-    // confirmation shows up without a manual refresh. Once paid,
-    // the bill never changes again and polling stops.
-    refetchInterval: (query) =>
-      query.state.data?.data?.status === "paid" ? false : 10_000,
+    // Live updates arrive over the guest WebSocket (Stage 8):
+    // bill.*/payment.* events invalidate this query. No interval
+    // polling — the socket hook refetches on a slow interval only
+    // while the socket is down. A paid bill never changes again.
   });
 }
 

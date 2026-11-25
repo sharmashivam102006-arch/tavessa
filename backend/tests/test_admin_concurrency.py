@@ -20,6 +20,8 @@ import pytest
 
 pgserver = pytest.importorskip("pgserver")
 
+from tests.pg_support import pg_cluster_dir, remove_pg_cluster_dir
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
@@ -48,8 +50,9 @@ def _pg_url(server) -> str:
 
 
 @pytest.fixture(scope="module")
-def pg_client(tmp_path_factory):
-    server = pgserver.get_server(str(tmp_path_factory.mktemp("pg7") / "pg"))
+def pg_client():
+    cluster_dir = pg_cluster_dir("pg7")
+    server = pgserver.get_server(str(cluster_dir))
     url = _pg_url(server)
     engine = create_engine(url, poolclass=QueuePool, pool_size=10, max_overflow=5)
     assert engine.url.get_dialect().name == "postgresql", engine.url
@@ -118,6 +121,7 @@ def pg_client(tmp_path_factory):
         limiter.enabled = was_enabled
         engine.dispose()
         server.cleanup()
+        remove_pg_cluster_dir(cluster_dir)
 
 
 def _place_and_pay(pg_client, table_number=5, quantity=4):

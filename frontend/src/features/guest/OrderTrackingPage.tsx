@@ -2,16 +2,20 @@ import { Link, useParams } from "react-router";
 import { ArrowLeft, RefreshCw } from "lucide-react";
 
 import { useGuestOrder } from "@/features/guest/hooks/useGuest";
+import { GuestConnectionLine } from "@/features/guest/components/ConnectionIndicator";
 import { formatINR } from "@/shared/utils/money";
 import { OrderStatusTimeline, StatusBadge } from "@/features/guest/components/StatusBadge";
 import { BackendNotConnected, LoadingState } from "@/features/guest/components/states";
 import { Button } from "@/components/ui/button";
 
 /** Live order tracking — the status timeline plus the order's items.
- * Re-fetches via REST every 20s (api-plan.md § 9.4: re-fetch on
- * reconnect/event). WebSocket push arrives in Stage 8; this page
- * does NOT simulate progress — it only shows what the backend
- * returned. */
+ * Status arrives over the guest WebSocket (Stage 8): the kitchen's
+ * placed → preparing → ready → served progression and a cancellation
+ * invalidate this order's query and the page re-fetches via REST —
+ * nothing is shown as successful until the backend confirms it, and
+ * no prep-time estimate is ever invented. While the socket is down
+ * the page shows the last saved state and the connection line says
+ * so; REST refetch on reconnect/focus keeps it honest. */
 export function OrderTrackingPage() {
   const { tableToken = "", orderId = "" } = useParams<{ tableToken: string; orderId: string }>();
   const orderQuery = useGuestOrder(tableToken, orderId);
@@ -37,9 +41,10 @@ export function OrderTrackingPage() {
               what="Loading this order's live status"
             >
               <p className="mt-2 text-sm text-amber-800">
-                Live tracking updates over WebSocket arrive in Stage 8; the
-                REST re-fetch behind this screen arrives in Stage 3. Until
-                then, no status is shown rather than a simulated one.
+                Live tracking updates arrive over the guest WebSocket;
+                the REST re-fetch behind this screen is what confirms
+                each status. Until the backend answers, no status is
+                shown rather than a simulated one.
               </p>
               <Button variant="outline" size="sm" className="mt-3" onClick={() => orderQuery.refetch()}>
                 <RefreshCw className="h-4 w-4" />
@@ -61,8 +66,10 @@ export function OrderTrackingPage() {
               </div>
               <p className="mt-1 flex items-center gap-2 text-sm text-stone-600">
                 <RefreshCw className="h-3.5 w-3.5" />
-                Refreshes automatically — status comes from the kitchen via the backend.
+                Status comes from the kitchen via the backend — live while
+                connected, last saved state while reconnecting.
               </p>
+              <GuestConnectionLine />
 
               <div className="mt-6 rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
                 <OrderStatusTimeline status={order.status} />

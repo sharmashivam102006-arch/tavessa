@@ -86,6 +86,27 @@ def _kitchen_list(client, setup, params=""):
     )
 
 
+def _all_kitchen_orders(client, setup, params=""):
+    """ALL pages of the kitchen active-orders list, oldest first.
+
+    Same accumulation reason as _kitchen_list's comment: once >100
+    active orders exist in the shared test DB (Stage 8's rate-limit
+    test alone places 60), page 1 no longer contains a just-placed
+    order. Paging through is the honest fix; the endpoint and its
+    pagination are unchanged.
+    """
+    rows: list[dict] = []
+    page = 1
+    while True:
+        sep = "&" if params.startswith("?") and len(params) > 1 else "?"
+        url = f"/api/v1/kitchen/orders{params}{sep}page={page}&per_page=100"
+        body = client.get(url, headers=kitchen_headers()).json()
+        rows.extend(body["data"])
+        if page >= body["pagination"]["total_pages"]:
+            return rows
+        page += 1
+
+
 # ----------------------------------------------------------------------
 # Dev gate
 # ----------------------------------------------------------------------
@@ -234,7 +255,7 @@ def test_new_guest_order_appears_in_kitchen_list(client, setup):
     placed = _place_one(client, setup, "k-appears-1")
     body = _kitchen_list(client, setup).json()
     assert body["pagination"]["total"] == before + 1
-    assert placed["id"] in {o["id"] for o in body["data"]}
+    assert placed["id"] in {o["id"] for o in _all_kitchen_orders(client, setup)}
 
 
 # ----------------------------------------------------------------------
@@ -547,10 +568,7 @@ def test_ws_order_created_and_status_changed(client, setup):
         f"/ws/kitchen?restaurant_id={rid}&dev_key={DEV_KEY}"
     ) as ws:
         placed = _place_one(client, setup, "k-ws-1")
-        listed = client.get(
-            f"/api/v1/kitchen/orders?restaurant_id={rid}&per_page=100",
-            headers=kitchen_headers(),
-        ).json()["data"]
+        listed = _all_kitchen_orders(client, setup, f"?restaurant_id={rid}")
         listed = next(o for o in listed if o["id"] == placed["id"])
         event = ws.receive_json()
         assert event["type"] == "order.created"

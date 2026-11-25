@@ -123,6 +123,44 @@ def _staff_orders(client, setup, params=""):
     )
 
 
+def _all_staff_orders(client, setup, params=""):
+    """ALL pages of the staff active-orders list, oldest first.
+
+    The shared test DB accumulates orders from earlier tests, and
+    the list is oldest-first with per_page capped at 100 — page 1
+    alone no longer contains this test's orders once >100 active
+    orders exist (Stage 8's rate-limit test alone places 60, plus
+    the guest-realtime and split tests). Paging through is the
+    honest fix: the endpoint and its pagination are unchanged.
+    """
+    rows: list[dict] = []
+    page = 1
+    while True:
+        sep = "&" if params else "?"
+        url = f"/api/v1/staff/orders{params}{sep}page={page}&per_page=100"
+        body = client.get(url, headers=staff_headers()).json()
+        rows.extend(body["data"])
+        if page >= body["pagination"]["total_pages"]:
+            return rows
+        page += 1
+
+
+def _all_kitchen_orders(client):
+    """ALL pages of the kitchen active-orders list, oldest first
+    (same accumulation reason as _all_staff_orders)."""
+    rows: list[dict] = []
+    page = 1
+    while True:
+        body = client.get(
+            f"/api/v1/kitchen/orders?page={page}&per_page=100",
+            headers=kitchen_headers(),
+        ).json()
+        rows.extend(body["data"])
+        if page >= body["pagination"]["total_pages"]:
+            return rows
+        page += 1
+
+
 def _serve(client, setup, order_id):
     return client.patch(
         f"/api/v1/staff/orders/{order_id}/serve",
@@ -265,20 +303,20 @@ def test_staff_orders_list_shape_and_filter(client, setup):
     first = _place_one(client, setup, "s-orders-1", name="Butter Naan")
     second = _place_one(client, setup, "s-orders-2", name="Masala Chai")
     _ready(client, setup, first["id"])
-    body = _staff_orders(client, setup).json()
-    mine = [o for o in body["data"] if o["id"] in (first["id"], second["id"])]
+    mine = [o for o in _all_staff_orders(client, setup)
+            if o["id"] in (first["id"], second["id"])]
     assert [o["id"] for o in mine] == [first["id"], second["id"]]  # oldest first
     assert mine[0]["status"] == "ready"
     assert mine[0]["tableNumber"] >= 900
     assert mine[0]["elapsedSeconds"] >= 0
     assert mine[0]["items"][0]["name"] == "Butter Naan"
     # Status filter.
-    body = _staff_orders(client, setup, "?status=ready").json()
-    assert first["id"] in [o["id"] for o in body["data"]]
-    assert second["id"] not in [o["id"] for o in body["data"]]
-    body = _staff_orders(client, setup, "?status=placed").json()
-    assert second["id"] in [o["id"] for o in body["data"]]
-    assert first["id"] not in [o["id"] for o in body["data"]]
+    ready = _all_staff_orders(client, setup, "?status=ready")
+    assert first["id"] in [o["id"] for o in ready]
+    assert second["id"] not in [o["id"] for o in ready]
+    placed = _all_staff_orders(client, setup, "?status=placed")
+    assert second["id"] in [o["id"] for o in placed]
+    assert first["id"] not in [o["id"] for o in placed]
     # Unknown filter -> 422.
     response = _staff_orders(client, setup, "?status=served")
     assert response.status_code == 422
@@ -286,8 +324,8 @@ def test_staff_orders_list_shape_and_filter(client, setup):
 
 def test_new_guest_order_appears_in_staff_list(client, setup):
     placed = _place_one(client, setup, "s-orders-3")
-    body = _staff_orders(client, setup).json()
-    assert placed["id"] in [o["id"] for o in body["data"]]
+    rows = _all_staff_orders(client, setup)
+    assert placed["id"] in [o["id"] for o in rows]
 
 
 # ----------------------------------------------------------------------
@@ -371,20 +409,16 @@ def test_serve_unknown_order_404(client, setup):
 def test_served_order_leaves_kitchen_queue(client, setup):
     order = _place_one(client, setup, "s-serve-3")
     _ready(client, setup, order["id"])
-    # per_page=100: the shared test DB accumulates orders, and the
-    # kitchen list is oldest-first — the default page may not
-    # contain this test's order.
-    kitchen_before = client.get(
-        "/api/v1/kitchen/orders?per_page=100", headers=kitchen_headers()
-    ).json()["data"]
+    # The shared test DB accumulates orders, and the kitchen list
+    # is oldest-first with per_page capped at 100 — page 1 alone
+    # may not contain this test's order.
+    kitchen_before = _all_kitchen_orders(client)
     assert order["id"] in [o["id"] for o in kitchen_before]
     assert _serve(client, setup, order["id"]).status_code == 200
-    kitchen_after = client.get(
-        "/api/v1/kitchen/orders?per_page=100", headers=kitchen_headers()
-    ).json()["data"]
+    kitchen_after = _all_kitchen_orders(client)
     assert order["id"] not in [o["id"] for o in kitchen_after]
     # ... and the staff active list too.
-    staff_after = _staff_orders(client, setup).json()["data"]
+    staff_after = _all_staff_orders(client, setup)
     assert order["id"] not in [o["id"] for o in staff_after]
 
 

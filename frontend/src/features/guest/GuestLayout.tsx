@@ -3,6 +3,11 @@ import { Link, Outlet, useLocation, useParams } from "react-router";
 import { Bell, ShoppingBag, UtensilsCrossed } from "lucide-react";
 
 import { useGuestSession, useMenuItemLookup } from "@/features/guest/hooks/useGuest";
+import {
+  GuestSocketProvider,
+  useGuestSocket,
+} from "@/features/guest/hooks/useGuestSocket";
+import { GuestConnectionPill } from "@/features/guest/components/ConnectionIndicator";
 import { useCartStore } from "@/features/guest/stores/cartStore";
 import { formatINR } from "@/shared/utils/money";
 import { Button } from "@/components/ui/button";
@@ -22,6 +27,11 @@ export function GuestLayout() {
   const itemCount = useCartStore((s) => s.itemCount());
   const findMenuItem = useMenuItemLookup(tableToken);
   const estimatedSubtotal = useCartStore((s) => s.estimatedSubtotal(findMenuItem));
+  // Stage 8: the ONE guest socket for this session lives here —
+  // the layout wraps every guest page, so it is opened once and
+  // shared via GuestSocketProvider. It is disabled for the demo
+  // preview (no backend session) and reports offline there.
+  const socket = useGuestSocket(tableToken);
 
   useEffect(() => {
     setTableToken(tableToken);
@@ -37,6 +47,7 @@ export function GuestLayout() {
     !location.pathname.endsWith("/review");
 
   return (
+    <GuestSocketProvider value={socket}>
     <div className="min-h-screen bg-stone-50 text-stone-900">
       <header className="sticky top-0 z-40 border-b border-stone-200 bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 px-4 py-3">
@@ -54,12 +65,15 @@ export function GuestLayout() {
               </span>
             </span>
           </Link>
-          <Button variant="outline" size="sm" asChild>
-            <Link to={`/t/${tableToken}/help`}>
-              <Bell className="h-4 w-4" />
-              Help
-            </Link>
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            {isDemo ? null : <GuestConnectionPill />}
+            <Button variant="outline" size="sm" asChild>
+              <Link to={`/t/${tableToken}/help`}>
+                <Bell className="h-4 w-4" />
+                Help
+              </Link>
+            </Button>
+          </div>
         </div>
       </header>
 
@@ -92,5 +106,6 @@ export function GuestLayout() {
         Tavessa · Zaika · Cash payments only
       </footer>
     </div>
+    </GuestSocketProvider>
   );
 }

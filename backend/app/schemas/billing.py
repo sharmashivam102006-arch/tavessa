@@ -35,6 +35,9 @@ class BillSplitOut(CamelModel):
     amount_paise: int
     status: str
     paid_at: datetime | None = None
+    # 'equal' | 'custom' — how the split set was created (Stage 8);
+    # None for splits created before Stage 8 (treated as 'custom').
+    mode: str | None = None
 
 
 class PaymentOut(CamelModel):

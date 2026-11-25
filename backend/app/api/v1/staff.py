@@ -138,16 +138,26 @@ async def serve_staff_order(
     is broadcast only after the commit."""
     restaurant = _resolve_restaurant(db, user, restaurant_id)
     out, order = staff_service.serve_order(db, restaurant.id, order_id)
+    status_payload = {
+        "order_id": str(order.id),
+        "order_number": order.order_number,
+        "status": order.status,
+        "table_number": out.table_number,
+    }
     await manager.broadcast(
         order.restaurant_id,
         "order.status_changed",
         order.table_id,
-        {
-            "order_id": str(order.id),
-            "order_number": order.order_number,
-            "status": order.status,
-            "table_number": out.table_number,
-        },
+        status_payload,
+    )
+    # Stage 8: the waiter serving the order reaches the guest live,
+    # session-scoped.
+    await manager.broadcast_guest(
+        order.table_session_id,
+        "order.status_changed",
+        order.restaurant_id,
+        order.table_id,
+        status_payload,
     )
     return StaffOrderDataResponse(data=out)
 
@@ -244,30 +254,48 @@ async def record_staff_payment(
         collected_by=user.id if user is not None else None,
     )
     if event is not None:
+        payment_payload = {
+            "bill_id": event["bill_id"],
+            "bill_number": event["bill_number"],
+            "payment_id": event["payment_id"],
+            "receipt_number": event["receipt_number"],
+            "amount_paise": event["amount_paise"],
+            "bill_status": event["bill_status"],
+        }
         await manager.broadcast(
             restaurant.id,
             "payment.recorded",
             event["table_id"],
-            {
-                "bill_id": event["bill_id"],
-                "bill_number": event["bill_number"],
-                "payment_id": event["payment_id"],
-                "receipt_number": event["receipt_number"],
-                "amount_paise": event["amount_paise"],
-                "bill_status": event["bill_status"],
-            },
+            payment_payload,
+        )
+        # Stage 8: the paying table's guest sockets see the payment
+        # live (outstanding updates, split progress), session-scoped.
+        await manager.broadcast_guest(
+            UUID(event["table_session_id"]),
+            "payment.recorded",
+            restaurant.id,
+            UUID(event["table_id"]),
+            payment_payload,
         )
         if event["fully_paid"]:
+            paid_payload = {
+                "bill_id": event["bill_id"],
+                "bill_number": event["bill_number"],
+                "receipt_number": event["receipt_number"],
+                "amount_paise": event["amount_paise"],
+            }
             await manager.broadcast(
                 restaurant.id,
                 "bill.paid",
                 event["table_id"],
-                {
-                    "bill_id": event["bill_id"],
-                    "bill_number": event["bill_number"],
-                    "receipt_number": event["receipt_number"],
-                    "amount_paise": event["amount_paise"],
-                },
+                paid_payload,
+            )
+            await manager.broadcast_guest(
+                UUID(event["table_session_id"]),
+                "bill.paid",
+                restaurant.id,
+                UUID(event["table_id"]),
+                paid_payload,
             )
     headers = {"Idempotency-Replayed": "true"} if replayed else {}
     return JSONResponse(content=response_body, status_code=status, headers=headers)
@@ -325,16 +353,26 @@ async def acknowledge_staff_help_call(
     out, call = staff_service.acknowledge_help_call(
         db, restaurant.id, call_id
     )
+    ack_payload = {
+        "help_call_id": str(call.id),
+        "table_number": out.table_number,
+        "type": call.type,
+        "status": call.status,
+    }
     await manager.broadcast(
         call.restaurant_id,
         "help_call.acknowledged",
         call.table_id,
-        {
-            "help_call_id": str(call.id),
-            "table_number": out.table_number,
-            "type": call.type,
-            "status": call.status,
-        },
+        ack_payload,
+    )
+    # Stage 8: the guest who asked for help sees the acknowledgement
+    # live, session-scoped.
+    await manager.broadcast_guest(
+        call.table_session_id,
+        "help_call.acknowledged",
+        call.restaurant_id,
+        call.table_id,
+        ack_payload,
     )
     return StaffHelpCallDataResponse(data=out)
 
@@ -357,15 +395,24 @@ async def resolve_staff_help_call(
     commit."""
     restaurant = _resolve_restaurant(db, user, restaurant_id)
     out, call = staff_service.resolve_help_call(db, restaurant.id, call_id)
+    resolve_payload = {
+        "help_call_id": str(call.id),
+        "table_number": out.table_number,
+        "type": call.type,
+        "status": call.status,
+    }
     await manager.broadcast(
         call.restaurant_id,
         "help_call.resolved",
         call.table_id,
-        {
-            "help_call_id": str(call.id),
-            "table_number": out.table_number,
-            "type": call.type,
-            "status": call.status,
-        },
+        resolve_payload,
+    )
+    # Stage 8: the guest sees the resolution live, session-scoped.
+    await manager.broadcast_guest(
+        call.table_session_id,
+        "help_call.resolved",
+        call.restaurant_id,
+        call.table_id,
+        resolve_payload,
     )
     return StaffHelpCallDataResponse(data=out)

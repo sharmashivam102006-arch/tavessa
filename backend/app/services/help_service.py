@@ -9,7 +9,12 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import ApiError
 from app.models import HelpCall
-from app.schemas.guest import HelpCallDataResponse, HelpCallOut, HelpCallRequest
+from app.schemas.guest import (
+    HelpCallDataResponse,
+    HelpCallListResponse,
+    HelpCallOut,
+    HelpCallRequest,
+)
 from app.services.table_service import GuestContext, _now
 
 
@@ -57,4 +62,33 @@ def create_help_call(
             status=call.status,
             created_at=call.created_at,
         )
+    )
+
+
+def list_help_calls(db: Session, ctx: GuestContext) -> HelpCallListResponse:
+    """GET /guest/help-calls — the session's help calls, newest
+    first. The guest's REST source of truth for assistance status:
+    the Help page refetches this after a socket reconnect (Stage 8).
+    Another session's calls are never visible (filtered by session)."""
+    calls = (
+        db.execute(
+            select(HelpCall)
+            .where(HelpCall.table_session_id == ctx.session.id)
+            .order_by(HelpCall.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    return HelpCallListResponse(
+        data=[
+            HelpCallOut(
+                id=call.id,
+                table_session_id=call.table_session_id,
+                type=call.type,
+                note=call.note,
+                status=call.status,
+                created_at=call.created_at,
+            )
+            for call in calls
+        ]
     )

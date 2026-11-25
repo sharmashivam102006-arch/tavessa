@@ -1,24 +1,28 @@
-"""Kitchen + Staff WebSockets — GET /ws/kitchen, GET /ws/staff
-(api-plan.md § 9, Stages 4–5, Stage 7 ticket auth).
+"""Kitchen + Staff + Guest WebSockets — GET /ws/kitchen, /ws/staff,
+/ws/guest (api-plan.md § 9, Stages 4–5, Stage 7 ticket auth,
+Stage 8 guest tickets).
 
-Auth at connect (Stage 7):
-- Production: ``?ticket=<single-use ticket>`` only (issued via
-  POST /api/v1/ws/tickets). The ticket is validated against the
-  DB (hash lookup, not expired, not used, user active + still has
-  the channel permission, restaurant matches) and marked used.
-  Dev keys are NEVER accepted in production.
-- Non-production: a ticket works too; ``?dev_key=`` still works
-  (existing tests keep passing unchanged).
+Auth at connect (Stage 7 for staff/kitchen, Stage 8 for guests):
+- ``?ticket=<single-use ticket>`` only (issued via POST
+  /api/v1/ws/tickets for staff/kitchen, POST /api/v1/guest/ws/tickets
+  for guests). The ticket is validated against the DB (hash lookup,
+  not expired, not used, channel matches, and for guests the bound
+  table session is still active) and marked used. Dev keys are
+  NEVER accepted in production (staff/kitchen only — the guest
+  channel has no dev-key path at all).
 - The ticket is never logged. Failures are refused with a close
-  code: 4401 bad/missing ticket or dev key, 4404 unknown
-  restaurant, 4403 auth not configured (production, no ticket).
-  The socket is accepted first and then closed with the code —
-  closing before accept would make uvicorn answer the handshake
-  with a bare HTTP 403 and the code would never reach the client.
+  code: 4401 bad/missing/expired/used ticket, 4403 ticket for
+  another channel or auth not configured (production, no ticket),
+  4404 unknown restaurant or inactive table session. The socket is
+  accepted first and then closed with the code — closing before
+  accept would make uvicorn answer the handshake with a bare HTTP
+  403 and the code would never reach the client.
 
-Both channels share the SAME in-process ConnectionManager, keyed
-by restaurant (single-process limitation — architecture.md § 6.3).
-Events are hints only; receivers re-fetch via REST.
+Channels share the SAME in-process ConnectionManager: staff/kitchen
+sockets are keyed by restaurant, guest sockets by table session
+(single-process limitation — architecture.md § 6.3). A guest socket
+receives ONLY its own session's events. Events are hints only;
+receivers re-fetch via REST.
 """
 import logging
 import secrets
@@ -27,7 +31,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
-from app.auth.deps import validate_ws_ticket
+from app.auth.deps import GuestWsBinding, validate_guest_ws_ticket, validate_ws_ticket
 from app.core.config import settings
 from app.core.deps import get_db
 from app.core.errors import ApiError
@@ -134,3 +138,52 @@ async def staff_websocket(
         logger.exception("Staff websocket error")
     finally:
         manager.disconnect(rid, websocket)
+
+
+@router.websocket("/ws/guest")
+async def guest_websocket(
+    websocket: WebSocket,
+    ticket: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Guest channel (Stage 8): ``GET /ws/guest?ticket=<ticket>``.
+
+    The ticket is issued via POST /api/v1/guest/ws/tickets and is
+    bound to one table session; the socket is subscribed to exactly
+    that session's events (manager.connect_guest) and receives
+    nothing from any other table. No dev-key path exists for guests
+    (a missing ticket is a 4401, same as a bad one). Close codes:
+    4401 bad/expired/used ticket, 4403 ticket for another channel
+    (a staff/kitchen ticket here), 4404 session no longer active.
+    Accept-then-close, as for staff/kitchen, so real clients see
+    the code. The ticket is never logged."""
+    binding: GuestWsBinding | None = None
+    code: int | None = None
+    reason: str | None = None
+    if not ticket:
+        code, reason = 4401, "unauthenticated"
+    else:
+        try:
+            binding = validate_guest_ws_ticket(db, ticket)
+        except ApiError as exc:
+            if exc.status_code == 403:
+                code, reason = 4403, exc.message
+            elif exc.status_code == 404:
+                code, reason = 4404, exc.message
+            else:
+                code, reason = 4401, exc.message
+    if binding is None:
+        await websocket.accept()
+        await websocket.close(code=code or 4401, reason=reason or "unauthenticated")
+        return
+    await websocket.accept()
+    await manager.connect_guest(binding.table_session_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception("Guest websocket error")
+    finally:
+        manager.disconnect_guest(binding.table_session_id, websocket)

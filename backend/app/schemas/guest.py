@@ -196,3 +196,11 @@ class HelpCallOut(CamelModel):
 
 class HelpCallDataResponse(CamelModel):
     data: HelpCallOut
+
+
+class HelpCallListResponse(CamelModel):
+    """The session's help calls, newest first — the guest's REST
+    source of truth for assistance status (Stage 8: the Help page
+    refetches this after a socket reconnect)."""
+
+    data: list[HelpCallOut]

@@ -493,6 +493,7 @@ Parts of one bill. Equal or custom; the parts must sum to the bill total.
 | `bill_id` | UUID NN FK → bills.id ON DELETE CASCADE | |
 | `label` | TEXT NN | e.g. `Split 1`, or a guest name |
 | `amount_paise` | BIGINT NN CHECK (> 0) | |
+| `mode` | TEXT | Stage 8: `equal` \| `custom`; NULL = created before Stage 8 (treated as `custom` — never silently re-derived). CHECK `mode IS NULL OR mode IN ('equal','custom')`. |
 | `status` | TEXT NN DEFAULT 'unpaid' | `unpaid` \| `payment_requested` \| `paid` |
 | `paid_at` | TIMESTAMPTZ | |
 
@@ -500,6 +501,44 @@ Index: `(bill_id)`. Rule (service + test): `SUM(splits) = bills.total_paise`.
 Equal split: `base = total // n`, `remainder = total % n`, first `remainder`
 splits get `+1` paise — deterministic, documented, tested. Custom split:
 explicit amounts, must sum exactly, else `422`.
+
+> **Stage 8 — split / tax-freeze reconciliation (25 Nov 2026).**
+> The Stage 7 limitation is closed: splits created before a tax freeze
+> can no longer disagree with the frozen total.
+>
+> - **Equal splits are re-derived at freeze.** In the same transaction
+>   as `freeze_tax_on_bill`, the UNPAID equal splits are recomputed
+>   from the frozen total minus already-paid split amounts, using the
+>   existing remainder rule above. Equal means equal — no customer
+>   meaning is lost. A `bill.splits_reconciled` audit row is written
+>   (old/new amounts) whenever the amounts actually change; an exact
+>   reconciliation writes no audit row.
+> - **Custom splits block the freeze.** If custom (or pre-Stage 8,
+>   `mode` NULL) splits no longer sum to the frozen total, the whole
+>   freeze transaction rolls back — the bill stays `issued`, totals
+>   unchanged — and the API returns `409 split_reconciliation_required`
+>   with `{expected_total_paise, splits_sum_paise, difference_paise}`
+>   and a message telling the guest to update the splits. The guest
+>   re-creates splits (validated against the LIVE-computed total with
+>   the current tax config, not the stored pre-freeze total) and
+>   retries the payment request.
+> - **Payments never accept a stale split amount.** A split payment
+>   validates the split's amount against the frozen bill total at
+>   payment time under the bill + split row lock; a mismatch → `409`,
+>   no payment row. A split's outstanding is always `split amount −
+>   payments on that split`; refunds reduce the payment, not the split
+>   amount.
+> - **History is untouched.** Freeze/reconciliation only ever touches
+>   `issued` bills. Paid bills and their recorded payments never
+>   change. `POST /guest/bill` regeneration of an `issued` bill no
+>   longer drops unpaid splits when the total changes — splits survive
+>   regeneration and are reconciled at freeze.
+> - **Trade-off recorded:** the freeze can now fail with a 409 the
+>   guest must act on (re-create splits). That is deliberate: silently
+>   rewriting a guest's custom amounts would invent a payment the
+>   guest never agreed to, and silently accepting a stale split amount
+>   would over/under-collect. The 409 body carries everything the UI
+>   needs to show the fix.
 
 ### 3.19 `payments` — the only record that money was collected
 
@@ -713,14 +752,15 @@ revoked, new token same family). Logout revokes the presented token;
 change-password / deactivate / password-reset revoke ALL of the user's
 sessions.
 
-### 3.28 `ws_tickets` — single-use WebSocket tickets (Stage 7)
+### 3.28 `ws_tickets` — single-use WebSocket tickets (Stage 7; guest tickets in Stage 8)
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID PK | |
-| `user_id` | UUID NN FK → users.id | |
+| `user_id` | UUID FK → users.id, nullable | Stage 8: NULL for guest tickets (a guest has no user). NOT NULL before Stage 8 (migration `c8d3e5f6a7b8`). |
+| `table_session_id` | UUID FK → table_sessions.id, nullable | Stage 8: set ONLY for guest tickets — the exact session the ticket is bound to. NULL for staff/kitchen tickets. |
 | `restaurant_id` | UUID NN FK | |
-| `channel` | TEXT NN | `kitchen` \| `staff` (CHECK) |
+| `channel` | TEXT NN | `kitchen` \| `staff` \| `guest` (CHECK; `guest` added in Stage 8). |
 | `ticket_hash` | TEXT NN UQ | SHA-256 hex of the opaque ticket; the raw ticket is never stored or logged |
 | `expires_at` | TIMESTAMPTZ NN | 60 s from issue |
 | `used_at` | TIMESTAMPTZ | NULL = unused; set (single-use) at connect |
@@ -729,7 +769,12 @@ sessions.
 Server-side by design: single-use requires server state, so tickets
 are NOT signed JWTs in the URL. Validation at connect: hash lookup,
 not expired, not used, user still active and still holding the channel
-permission, restaurant matches.
+permission, restaurant matches. **Stage 8 (guest tickets):** `user_id`
+is NULL; instead the ticket is bound to `table_session_id` — validation
+additionally requires the session to exist and still be `active` and its
+QR token not revoked/expired, and the ticket's restaurant/branch/table
+must match that session. A guest ticket presented to `/ws/kitchen` or
+`/ws/staff` (or a staff/kitchen ticket to `/ws/guest`) → 4403.
 
 ### 3.29 `tax_configurations` — owner tax config history (Stage 7, D1)
 

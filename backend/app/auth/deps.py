@@ -15,6 +15,7 @@
   unchanged). Guest table-token auth is untouched.
 """
 import secrets
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -176,17 +177,23 @@ def require_staff_access(
 def validate_ws_ticket(
     db: Session, raw_ticket: str, channel: str
 ) -> tuple[User, UUID]:
-    """Validate a single-use WS ticket: hash lookup, not expired,
-    not used, user active + still has the channel permission,
-    restaurant matches. Marks ``used_at`` (single-use) and commits.
-    The ticket is never logged. Returns (user, restaurant_id)."""
+    """Validate a single-use staff/kitchen WS ticket: hash lookup,
+    not expired, not used, user active + still has the channel
+    permission, restaurant matches. Marks ``used_at`` (single-use)
+    and commits. The ticket is never logged. Returns (user,
+    restaurant_id).
+
+    A ticket that exists but belongs to ANOTHER channel is a 403,
+    not a 401 — the caller maps it to close code 4403 (wrong
+    channel), distinct from 4401 (bad/expired/used ticket). A
+    'guest' ticket must never open a staff/kitchen channel, and
+    vice versa (see ``validate_guest_ws_ticket``)."""
     from sqlalchemy import select
 
     row = (
         db.execute(
             select(WsTicket).where(
                 WsTicket.ticket_hash == hash_ws_ticket(raw_ticket),
-                WsTicket.channel == channel,
             )
         )
         .scalars()
@@ -194,6 +201,10 @@ def validate_ws_ticket(
     )
     if row is None:
         raise ApiError(401, "unauthenticated", "The WebSocket ticket is invalid.")
+    if row.channel != channel:
+        raise ApiError(
+            403, "forbidden", "This ticket is for a different channel."
+        )
     now = datetime.now(timezone.utc)
     expires = row.expires_at
     if expires.tzinfo is None:
@@ -209,3 +220,74 @@ def validate_ws_ticket(
     row.used_at = now
     db.commit()
     return user, row.restaurant_id
+
+
+@dataclass
+class GuestWsBinding:
+    """What a validated guest WS ticket binds the socket to. The
+    client never sees the session UUID — the binding lives
+    server-side and the socket is subscribed to exactly this
+    session's events."""
+
+    restaurant_id: UUID
+    branch_id: UUID
+    table_id: UUID
+    table_session_id: UUID
+
+
+def validate_guest_ws_ticket(db: Session, raw_ticket: str) -> GuestWsBinding:
+    """Validate a single-use guest WS ticket (Stage 8): hash lookup,
+    channel must be 'guest' (a staff/kitchen ticket here is a 403,
+    mapped to close code 4403), not expired, not used, and the
+    bound table session must still be active — a closed session, or
+    a session whose QR token was revoked/expired, is a 404, mapped
+    to close code 4404. Marks ``used_at`` (single-use) and commits.
+    The ticket is never logged. Returns the session binding."""
+    from sqlalchemy import select
+
+    from app.models.table import TableSession, TableToken
+
+    row = (
+        db.execute(
+            select(WsTicket).where(
+                WsTicket.ticket_hash == hash_ws_ticket(raw_ticket),
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if row is None:
+        raise ApiError(401, "unauthenticated", "The WebSocket ticket is invalid.")
+    if row.channel != "guest":
+        raise ApiError(
+            403, "forbidden", "This ticket is for a different channel."
+        )
+    now = datetime.now(timezone.utc)
+    expires = row.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if row.used_at is not None or expires <= now:
+        raise ApiError(401, "unauthenticated", "The WebSocket ticket is invalid.")
+    session = (
+        db.get(TableSession, row.table_session_id)
+        if row.table_session_id is not None
+        else None
+    )
+    if session is None or session.status != "active":
+        raise ApiError(
+            404, "session_not_found", "This table session is no longer active."
+        )
+    if session.token_id is not None:
+        token = db.get(TableToken, session.token_id)
+        if token is None or token.status != "active" or token.is_expired:
+            raise ApiError(
+                404, "session_not_found", "This table session is no longer active."
+            )
+    row.used_at = now
+    db.commit()
+    return GuestWsBinding(
+        restaurant_id=session.restaurant_id,
+        branch_id=session.branch_id,
+        table_id=session.table_id,
+        table_session_id=session.id,
+    )

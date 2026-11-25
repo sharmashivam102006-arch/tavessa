@@ -233,10 +233,19 @@ export interface HelpCall {
 /* Bills & splits (api-plan.md § 7 as built in Stage 6) — cash only   */
 /* ------------------------------------------------------------------ */
 
-/** Bill statuses as built in Stage 6: issued | payment_requested |
- * paid. There are no voided / refunded states in this stage
- * (owner auth does not exist yet — deferred to Stage 7). */
-export type BillStatus = "issued" | "payment_requested" | "paid";
+/** Bill statuses as built in Stage 6, extended in Stage 7/8:
+ * issued | payment_requested | paid, plus voided (owner void,
+ * Stage 7) and refunded / partially_refunded (cash refunds,
+ * Stage 7). The guest bill endpoint can return a refunded bill
+ * (most recent paid bill); a voided bill is reported live via the
+ * ``bill.updated`` event (Stage 8) and the guest requests a new one. */
+export type BillStatus =
+  | "issued"
+  | "payment_requested"
+  | "paid"
+  | "voided"
+  | "refunded"
+  | "partially_refunded";
 
 export interface BillItem {
   id: string;
@@ -285,8 +294,13 @@ export interface Bill {
   orderNumbers: string[];
   subtotalPaise: number;
   /** Tax undecided (D1) — 0 until the backend configures it. The
-   * UI says "not configured", never "0% GST". */
+   * UI says "not configured", never "0% GST". Once a bill is frozen
+   * the backend snapshots the config it froze under (Stage 7); the
+   * snapshot is null on an unfrozen bill. */
   taxPaise: number;
+  taxRateBpsSnapshot?: number | null;
+  taxModeSnapshot?: string | null;
+  taxLabelSnapshot?: string | null;
   serviceChargePaise: number;
   discountPaise: number;
   totalPaise: number;
@@ -394,6 +408,55 @@ export type KitchenConnectionStatus =
   | "connecting"
   | "reconnecting"
   | "offline";
+
+/** Guest WebSocket event envelope (api-plan.md § 9.3, Stage 8).
+ * Same shape as KitchenEvent; `data` carries identifiers + a
+ * summary only — receivers re-fetch via REST. The ten guest event
+ * types are the complete list for the guest channel. */
+export interface GuestEvent {
+  type:
+    | "order.created"
+    | "order.status_changed"
+    | "order.cancelled"
+    | "help_call.opened"
+    | "help_call.acknowledged"
+    | "help_call.resolved"
+    | "bill.created"
+    | "bill.updated"
+    | "payment.recorded"
+    | "bill.paid"
+    | string;
+  restaurant_id: string;
+  table_id: string | null;
+  data: {
+    order_id?: string;
+    order_number?: string;
+    status?: string;
+    table_number?: number;
+    help_call_id?: string;
+    type?: string;
+    bill_id?: string;
+    bill_number?: string;
+    payment_id?: string;
+    receipt_number?: string;
+    amount_paise?: number;
+    bill_status?: string;
+    total_paise?: number;
+    outstanding_paise?: number;
+  };
+  version: number;
+  occurred_at: string;
+}
+
+/** Guest socket state (Stage 8). `session-expired` is terminal for
+ * this session: the QR token/session is gone and reconnecting would
+ * loop forever, so the UI tells the guest to reopen via QR instead. */
+export type GuestConnectionStatus =
+  | "live"
+  | "connecting"
+  | "reconnecting"
+  | "offline"
+  | "session-expired";
 
 export interface PaginationInfo {
   page: number;

@@ -117,15 +117,26 @@ async def transition_kitchen_order(
     out, order = kitchen_service.transition_order(
         db, restaurant.id, order_id, body.status
     )
+    status_payload = {
+        "order_id": str(order.id),
+        "order_number": order.order_number,
+        "status": order.status,
+        "table_number": out.table_number,
+    }
     await manager.broadcast(
         order.restaurant_id,
         "order.status_changed",
         order.table_id,
-        {
-            "order_id": str(order.id),
-            "order_number": order.order_number,
-            "status": order.status,
-            "table_number": out.table_number,
-        },
+        status_payload,
+    )
+    # Stage 8: the ordering table's guest sockets get the same
+    # status change, session-scoped — the kitchen's update reaches
+    # the guest live (placed -> preparing -> ready).
+    await manager.broadcast_guest(
+        order.table_session_id,
+        "order.status_changed",
+        order.restaurant_id,
+        order.table_id,
+        status_payload,
     )
     return KitchenOrderDataResponse(data=out)

@@ -18,6 +18,8 @@ from app.auth.deps import get_current_user, require_permission
 from app.auth.models import User
 from app.core.deps import get_db
 from app.core.errors import ApiError
+from app.models import Bill
+from app.realtime.manager import manager
 from app.schemas.admin import (
     AddOnCreateRequest,
     AddOnDataResponse,
@@ -209,20 +211,51 @@ def daily_cash_report(
 
 # --- Bills: void + refunds ---------------------------------------------------
 
+async def _broadcast_bill_updated(db: Session, bill_id: UUID) -> None:
+    """Stage 8: a bill whose status changed (void / refund) tells
+    the table's guest sockets via ``bill.updated`` — the Bill page
+    shows the voided/refunded state live instead of waiting for a
+    refetch. The bill row is re-read after the service committed;
+    a bill with no session (or an already-closed one) has no guest
+    sockets to tell."""
+    bill = db.get(Bill, bill_id)
+    if bill is None or bill.table_session_id is None:
+        return
+    await manager.broadcast_guest(
+        bill.table_session_id,
+        "bill.updated",
+        bill.restaurant_id,
+        bill.table_id,
+        {
+            "bill_id": str(bill.id),
+            "bill_number": bill.bill_number,
+            "status": bill.status,
+            "total_paise": bill.total_paise,
+            "outstanding_paise": max(
+                0, bill.total_paise - bill.amount_paid_paise
+            ),
+        },
+    )
+
+
 @router.post("/bills/{bill_id}/void", response_model=BillDetailResponse)
-def void_bill(
+async def void_bill(
     bill_id: UUID,
     body: VoidBillRequest,
     db: Session = Depends(get_db),
     user: User = Depends(_void_bills),
 ):
-    return BillDetailResponse(
+    result = BillDetailResponse(
         data=admin_service.void_bill(db, user, bill_id, body.reason)
     )
+    # Stage 8 (NEW — void broadcast nothing before): the guest
+    # sees the void live and can request a new bill.
+    await _broadcast_bill_updated(db, bill_id)
+    return result
 
 
 @router.post("/bills/{bill_id}/refunds", status_code=201)
-def create_refund(
+async def create_refund(
     bill_id: UUID,
     body: RefundCreateRequest,
     db: Session = Depends(get_db),
@@ -239,6 +272,11 @@ def create_refund(
         db, user, bill_id, body.payment_id, body.amount_paise,
         body.reason, idempotency_key,
     )
+    # Stage 8 (NEW — refunds broadcast nothing before): a real
+    # refund (not an idempotent replay) tells the table's guest
+    # sockets the bill changed.
+    if not replayed:
+        await _broadcast_bill_updated(db, bill_id)
     headers = {"Idempotency-Replayed": "true"} if replayed else {}
     return JSONResponse(content=response_body, status_code=status, headers=headers)
 

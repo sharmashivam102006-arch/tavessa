@@ -47,23 +47,33 @@ async def place_order(
         # NOT broadcast — no new order exists. The service stays
         # broadcast-free so tests can call it without a WebSocket.
         placed = response_body["order"]
+        order_payload = {
+            "order_id": placed["id"],
+            "order_number": placed["orderNumber"],
+            "status": placed["status"],
+            "table_number": ctx.table.number,
+        }
         await manager.broadcast(
             ctx.restaurant.id,
             "order.created",
             ctx.table.id,
-            {
-                "order_id": placed["id"],
-                "order_number": placed["orderNumber"],
-                "status": placed["status"],
-                "table_number": ctx.table.number,
-            },
+            order_payload,
+        )
+        # Stage 8: the placing table's own guest sockets get the
+        # same event, session-scoped — no other table sees it.
+        await manager.broadcast_guest(
+            ctx.session.id,
+            "order.created",
+            ctx.restaurant.id,
+            ctx.table.id,
+            order_payload,
         )
     headers = {"Idempotency-Replayed": "true"} if replayed else {}
     return JSONResponse(content=response_body, status_code=status, headers=headers)
 
 
 @router.post("/orders/{order_id}/cancel", status_code=200)
-def cancel_order(
+async def cancel_order(
     order_id: UUID,
     body: CancelOrderRequest | None = None,
     ctx: GuestContext = Depends(get_guest_context),
@@ -71,6 +81,28 @@ def cancel_order(
 ) -> JSONResponse:
     result = order_service.cancel_order(
         db, ctx, order_id, body.reason if body else None
+    )
+    # Stage 8 (NEW — cancel broadcast nothing before): the kitchen
+    # must drop the ticket and the waiter must stop watching it, so
+    # ``order.cancelled`` goes to the restaurant channel; the
+    # cancelling table's guest sockets get it session-scoped.
+    # Broadcast AFTER the cancel transaction committed (the service
+    # commits internally before returning).
+    payload = {
+        "order_id": str(order_id),
+        "order_number": result.data.order_number,
+        "status": "cancelled",
+        "table_number": ctx.table.number,
+    }
+    await manager.broadcast(
+        ctx.restaurant.id, "order.cancelled", ctx.table.id, payload
+    )
+    await manager.broadcast_guest(
+        ctx.session.id,
+        "order.cancelled",
+        ctx.restaurant.id,
+        ctx.table.id,
+        payload,
     )
     return JSONResponse(
         content=result.model_dump(by_alias=True, mode="json"), status_code=200

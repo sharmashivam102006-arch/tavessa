@@ -33,6 +33,8 @@ import pytest
 
 pgserver = pytest.importorskip("pgserver")
 
+from tests.pg_support import pg_cluster_dir, remove_pg_cluster_dir
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
@@ -63,13 +65,14 @@ def _pg_url(server) -> str:
 
 
 @pytest.fixture(scope="module")
-def pg_client(tmp_path_factory):
+def pg_client():
     """Ephemeral real Postgres + per-request sessions + TestClient.
 
     Module-scoped ON PURPOSE: each pgserver cluster costs a full
-    initdb on the 512M /tmp tmpfs, and a fresh cluster per test made
-    the suite flaky there (initdb failing mid-bootstrap under disk
-    pressure). One cluster serves all the tests in this module;
+    initdb, and a fresh cluster per test made the suite flaky
+    when the clusters lived on the 512M /tmp tmpfs (initdb failing
+    mid-bootstrap under disk pressure) — clusters now live under
+    ~/.pg-tmp (tests/pg_support.py). One cluster serves all the tests in this module;
     tests stay independent via unique idempotency keys and delta
     assertions (order counts before/after each burst), never
     absolute totals.
@@ -77,7 +80,8 @@ def pg_client(tmp_path_factory):
     Yields {"mk_client": callable returning a fresh TestClient,
     "session_factory": sessionmaker, "engine": engine}.
     """
-    server = pgserver.get_server(str(tmp_path_factory.mktemp("pg31") / "pg"))
+    cluster_dir = pg_cluster_dir("pg31")
+    server = pgserver.get_server(str(cluster_dir))
     url = _pg_url(server)
     engine = create_engine(
         url, poolclass=QueuePool, pool_size=10, max_overflow=5
@@ -145,6 +149,7 @@ def pg_client(tmp_path_factory):
         limiter.enabled = was_enabled
         engine.dispose()
         server.cleanup()
+        remove_pg_cluster_dir(cluster_dir)
 
 
 def _order_body(menu):

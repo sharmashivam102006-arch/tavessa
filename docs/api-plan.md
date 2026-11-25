@@ -204,7 +204,7 @@ per-item details (`{ "field": "items[1].variant_id", "code": "invalid_variant" }
 | `GET /guest/orders` | `X-Table-Token` | Orders for this session (active + recent). **Stage 3: implemented** — `{ "data": […], "pagination": { "page", "per_page", "total", "total_pages" } }`, `placed_at` desc. |
 | `GET /guest/orders/:id` | `X-Table-Token` | One order of this session, for live tracking. **Stage 3: implemented** — another session's order → `404`. |
 | `PATCH /orders/:id/status` | JWT (kitchen/owner; waiter for `served` only) | Body `{ "status": "accepted" \| "preparing" \| "ready" \| "served" \| "completed" \| "cancelled", "reason": "…" }`. Transition validated against the machine (`database-design.md` § 6); illegal → `409`. Sets the matching `*_at` timestamp. **Not in Stage 3; not in Stage 4 either** — Stage 4 built the kitchen transition as `PATCH /kitchen/orders/:id/status` instead (see § 6: order-level, preparing/ready only, dev-key gated). **Stage 5 built the serve transition as `PATCH /staff/orders/:id/serve` instead** (see § 5: ready→served only, dev-key gated). The staff-wide endpoint lands with staff auth. |
-| `POST /orders/:id/cancel` | JWT or guest (own session, before `accepted` — per D8) | Body `{ "reason": "…" }`. Cancels the order and its non-served items; recomputes totals; if a bill already exists, the bill must be regenerated (Stage 6 rule). **Stage 3: guest cancel implemented — only while `placed` (D8 still open), else `409`; cancels its items too, same transaction.** |
+| `POST /orders/:id/cancel` | JWT or guest (own session, before `accepted` — per D8) | Body `{ "reason": "…" }`. Cancels the order and its non-served items; recomputes totals; if a bill already exists, the bill must be regenerated (Stage 6 rule). **Stage 3: guest cancel implemented — only while `placed` (D8 still open), else `409`; cancels its items too, same transaction. Stage 8: now broadcasts `order.cancelled` after commit — to the restaurant channel (kitchen + staff) AND to the cancelling guest's session socket.** |
 | `PATCH /orders/:orderId/items/:itemId/status` | JWT (kitchen/owner; waiter for `served` only) | **Not built — superseded by the Stage 4 order-level decision** (api-plan.md § 6, deviation 1): there is no per-item status endpoint; items move with their order. |
 
 **Status-transition rule:** the backend is the only authority. A request to
@@ -282,7 +282,8 @@ the response, computed server-side).
 | `GET /tables/:id` | JWT (waiter/owner) | Table + active session + its orders + its open bill. **Not built — superseded in Stage 5 by `GET /staff/tables/:id` (dev-key gated; no bill until Stage 6).** |
 | `PATCH /tables/:id/status` | JWT (waiter/owner) | `{ "status": "cleaning" \| "available" \| "out_of_service" }`. `occupied` is system-set, not manually settable (except by owner override — audited, Stage 5). **Not built — Stage 6.** |
 | `POST /tables/:id/close-session` | JWT (waiter/owner) | Close the active session (only when no unpaid bill — else `409` with the bill id). Sets table `cleaning`. **Not built — Stage 6.** |
-| `POST /guest/help-calls` | `X-Table-Token` | **Stage 3: implemented.** Body `{ "type": "waiter" \| "water" \| "plates" \| "order_help", "note": "…" }` — type is case-insensitive, `plates_cutlery` is an alias for `plates`. One open/acknowledged call per session (second call → `409` with the existing call id in `error.details`). Status starts `open`; nothing claims a waiter has accepted it. **Stage 5: now also broadcasts `help_call.opened` after the creation transaction commits.** |
+| `POST /guest/help-calls` | `X-Table-Token` | **Stage 3: implemented.** Body `{ "type": "waiter" \| "water" \| "plates" \| "order_help", "note": "…" }` — type is case-insensitive, `plates_cutlery` is an alias for `plates`. One open/acknowledged call per session (second call → `409` with the existing call id in `error.details`). Status starts `open`; nothing claims a waiter has accepted it. **Stage 5: now also broadcasts `help_call.opened` after the creation transaction commits. Stage 8: also broadcasts `help_call.opened` to the guest's own session socket.** |
+| `GET /guest/help-calls` | `X-Table-Token` | **Stage 8: implemented.** The session's help calls, newest first — the guest's REST source of truth for assistance status (the Help page refetches this after a socket reconnect). |
 | `GET /help-calls` | JWT (waiter/owner) | Filters: `status`, `table_id`, `assigned_to=me`. **Not built — superseded in Stage 5 by `GET /staff/help-calls` (dev-key gated; no assignment filter yet).** |
 | `GET /help-calls/:id` | JWT | One call. **Not built.** |
 | `PATCH /help-calls/:id/accept` | JWT (waiter/owner) | Assigns to the caller, `open → acknowledged`. Publishes `help_call.acknowledged`. **Not built — superseded in Stage 5 by `PATCH /staff/help-calls/:id/acknowledge` (dev-key gated, no assignment).** |
@@ -366,7 +367,7 @@ payment rolls the audit row back too).
 | `POST /api/v1/guest/bill` | `X-Table-Token` | Create-or-retrieve for the active session. No bill → generate (status `issued`, broadcast `bill.created` after commit); open `issued` bill → regenerate from current non-cancelled orders (decision 8) and return 200; open `payment_requested` bill → return as-is (frozen); paid bill + new billable items → NEW bill with only unreferenced items; no billable items and no bill → 409 `nothing_to_bill`. Returns bill + items + splits + payments + totals + outstanding. |
 | `GET /api/v1/guest/bill` | `X-Table-Token` | The session's open bill, else the most recent paid bill (receipt view); none → 404 `bill_not_found`. Another session's bill → 404, not 403. |
 | `PATCH /api/v1/guest/bill/request-payment` | `X-Table-Token` | Empty body. `issued → payment_requested` (unpaid splits → `payment_requested` too); creates NO payment row; already requested → 200 idempotent; paid → 409. Broadcasts `bill.requested` after commit (only on the actual transition). |
-| `POST /api/v1/guest/bill/splits` | `X-Table-Token` | `{ "mode": "equal", "parts": N }` or `{ "mode": "custom", "amountsPaise": [...] }`. Server-validated: equal parts ≥ 2 (remainder 1p to earliest parts); custom sums exactly to total, each > 0, else 422. Replaces existing UNPAID splits in one transaction; refused once any split is paid or `payment_requested` → 409. Only while the bill is `issued`/`payment_requested`. |
+| `POST /api/v1/guest/bill/splits` | `X-Table-Token` | `{ "mode": "equal", "parts": N }` or `{ "mode": "custom", "amountsPaise": [...] }`. Server-validated: equal parts ≥ 2 (remainder 1p to earliest parts); custom sums exactly to total, each > 0, else 422. **Stage 8:** validated against the LIVE-computed total with the current tax config (the bill is regenerated first), and the `mode` is recorded on the split rows — see § 7.4. Replaces existing UNPAID splits in one transaction; refused once any split is paid or `payment_requested` → 409. Only while the bill is `issued`/`payment_requested`. |
 | `GET /api/v1/guest/bill/receipt` | `X-Table-Token` | Only after the bill is paid, else 409 `receipt_not_available`. |
 | `GET /api/v1/staff/bills?restaurant_id=&status=&table_id=&page=&per_page=` | JWT (staff) in production; dev key or JWT in dev (production dev key → 401) | List, `payment_requested` first, then `issued_at` desc. Row: table number, bill number, status, total, amount paid, outstanding, `payment_requested_at`, order count. Unknown status → 422; unknown/wrong-restaurant table → 404. Returns paid bills too — filter with `status=`; the staff queue drops paid rows itself. |
 | `GET /api/v1/staff/bills/:id?restaurant_id=` | JWT (staff) in production; dev key or JWT in dev | Full bill: items, splits, payments (history), totals, outstanding, table/session info. Unknown id or wrong restaurant → 404. |
@@ -460,6 +461,45 @@ timestamp (= `paid_at`). No PDF in this stage — the receipt is a
 structured API response + a rendered view in both UIs. A receipt is
 never issued as paid before the backend confirms a successful cash
 payment (enforced by the 409 + tests).
+
+### 7.4 Split / tax-freeze reconciliation — built in Stage 8 (25 Nov 2026)
+
+Policy (full statement in `database-design.md` § 3.18):
+
+- **Equal splits are re-derived at freeze**, in the same transaction
+  as the freeze, from the frozen total minus already-paid split
+  amounts, using the existing remainder rule (`base = total // n`,
+  remainder 1p to earliest parts). An audit row
+  (`bill.splits_reconciled`, old/new amounts) is written when the
+  amounts change; an exact reconciliation writes none. The freeze
+  only ever touches `issued` bills — paid bills and their payments
+  never change.
+- **Custom splits block the freeze.** If custom (or pre-Stage 8,
+  `mode` NULL) splits no longer sum to the frozen total, the whole
+  freeze rolls back (bill stays `issued`, totals unchanged) and the
+  API returns `409 split_reconciliation_required` with
+  `{expected_total_paise, splits_sum_paise, difference_paise}` and a
+  message telling the guest to update the splits. The guest then
+  re-creates splits and retries the payment request.
+- **`POST /guest/bill/splits` validates against the LIVE-computed
+  total** (the bill is regenerated from current orders with the
+  current tax config first) — not the stored pre-freeze total — so a
+  split created after a tax change already matches the new total.
+  `POST /guest/bill` regeneration of an `issued` bill no longer drops
+  unpaid splits when the total changes; splits survive regeneration
+  and are reconciled at freeze. Split creation records `mode`
+  (`equal` | `custom`) on the row.
+- **Split payments validate at payment time** (row-locked bill +
+  split): the split's amount must match the frozen bill total's
+  allocation; a mismatch → `409`, no payment row. A split's
+  outstanding is `split amount − payments on that split`; refunds
+  reduce the payment, not the split amount.
+- **Concurrency:** `request-payment` locks the bill row before the
+  status check, so concurrent freezes serialise and reconcile
+  exactly once (one audit row); concurrent split payments serialise
+  on the bill row lock and can never exceed the total (tested on
+  real PostgreSQL: 4-way concurrent split payments → bill exactly
+  paid; 2-way concurrent freezes → 1 audit row).
 
 
 ## 8. Admin — owner dashboard (as built in Stage 7, 24 Nov 2026)
@@ -572,12 +612,31 @@ POST /api/v1/ws/tickets                     # authenticated (JWT) — Stage 7
                                             # Kitchen: needs view_kitchen or update_kitchen;
                                             # staff: needs serve_orders or confirm_cash or
                                             # view_dashboard. Never logged.
+POST /api/v1/guest/ws/tickets               # authenticated (X-Table-Token) — Stage 8
+                                            # Validates the table token + active session
+                                            # server-side, then issues a guest ticket:
+                                            # same opaque/SHA-256/single-use/60 s shape,
+                                            # user_id NULL, bound to the exact restaurant,
+                                            # branch, table and active session
+                                            # (table_session_id). Returns 201
+                                            # { "ticket", "channel": "guest", "expiresAt" }.
+                                            # Invalid token → 401, expired/revoked session
+                                            # → 410 (before minting). Never logged.
 GET /ws/kitchen?restaurant_id=<uuid>&ticket=<ticket>   # kitchen — Stage 4, LIVE
                                             # (ticket in production; ?dev_key= still works
                                             # in dev; never logged)
 GET /ws/staff?restaurant_id=<uuid>&ticket=<ticket>     # staff — Stage 5, LIVE
-GET /ws/restaurant?token=<access-jwt>          # staff / kitchen / owner — Stage 8
-GET /ws/table-session?token=<table-token>       # guest — Stage 8
+GET /ws/guest?ticket=<ticket>               # guest — Stage 8, LIVE
+                                            # The ticket carries the binding server-side;
+                                            # the client never sees the session UUID.
+                                            # No restaurant_id param — it comes from the
+                                            # ticket. No dev-key path for guests.
+GET /ws/restaurant?token=<access-jwt>          # staff / kitchen / owner — NOT BUILT
+                                            # (deferred in the Stage 8 brief; the
+                                            # per-channel endpoints above are the
+                                            # complete list)
+GET /ws/table-session?token=<table-token>       # guest — NOT BUILT
+                                            # (superseded by /ws/guest + ticket)
 ```
 
 > **Stage 7 status (24 Nov 2026): `/ws/kitchen` AND `/ws/staff`
@@ -614,6 +673,28 @@ GET /ws/table-session?token=<table-token>       # guest — Stage 8
 > channel, Stage 6). A failed/rolled-back request broadcasts
 > nothing. The envelope is § 9.3; `version` is a per-restaurant
 > in-memory counter.
+>
+> **Stage 8 status (25 Nov 2026): `/ws/guest` is LIVE.** The guest
+> channel is session-scoped, not restaurant-scoped: a guest ticket
+> binds one `table_session_id`, and `broadcast_guest` delivers an
+> event ONLY to sockets of that session — a guest can never receive
+> another table's events (proven by test: an unrelated table's socket
+> receives zero events across the full golden path). The same
+> `ConnectionManager` serves all three channels (extended, not
+> replaced); channel isolation is structural — no call fans a guest
+> event to a restaurant channel or vice versa. Guest validation:
+> hash lookup → 401 if missing; channel ≠ `guest` → 403 (→ 4403);
+> expired/used → 401 (→ 4401); bound session missing / not active /
+> QR token revoked or expired → 404 (→ 4404). The ticket is marked
+> used before the socket is accepted. Guest payloads use
+> **snake_case** keys (`order_number`, `bill_id`, `help_call_id`,
+> `status`, `table_number`) — the same shape as the staff/kitchen
+> payloads. `version` for the guest channel is a per-SESSION
+> in-memory counter (each session's events are ordered within that
+> session); the frontend ignores events with `version` ≤ the highest
+> seen — it is not an event-replay system. The planned generic
+> `/ws/restaurant` channel was NOT built (deferred in the Stage 8
+> brief — the brief's event list is the complete list).
 
 ### 9.2 Channels & authorisation
 
@@ -624,6 +705,7 @@ GET /ws/table-session?token=<table-token>       # guest — Stage 8
 | `kitchen:{restaurant_id}:{station_id}` | KDS | JWT role kitchen/owner + station belongs to restaurant |
 | `kitchen:{restaurant_id}` | KDS | **Stage 4, LIVE; Stage 7 ticket auth:** valid single-use ticket (or dev key in dev) + restaurant exists |
 | `staff:{restaurant_id}` | Staff board | **Stage 5, LIVE; Stage 7 ticket auth:** valid single-use ticket (or dev key in dev) + restaurant exists |
+| `guest:{table_session_id}` | The guest of that session ONLY | **Stage 8, LIVE:** valid single-use guest ticket bound to that exact session (see § 9.1). No other session, no staff/kitchen socket, ever receives these events. A guest ticket can never open `kitchen:`/`staff:` (4403) and vice versa. |
 
 A client subscribes by sending `{ "action": "subscribe", "channel": "…" }`
 after connect. Subscribing to a channel it is not authorised for returns an
@@ -637,22 +719,40 @@ All events use the envelope in `architecture.md` § 6.1
 
 | Event | Published when | Channels |
 |---|---|---|
-| `order.created` | Order committed | `restaurant:*`, `kitchen:*` (per station tickets), `table-session:*` — **live on `kitchen:{id}` + `staff:{id}` since Stages 4/5** |
-| `order.status_changed` | Order status changes | `restaurant:*`, `table-session:*` — **live on `kitchen:{id}` + `staff:{id}` since Stages 4/5 (kitchen transitions AND staff serve)** |
-| `order.item_ready` | An item becomes `ready` | `restaurant:*`, `table-session:*` |
-| `order.item_status_changed` | Any item status change | `restaurant:*`, `kitchen:*` |
-| `ticket.created` | Ticket created (with the order) | `kitchen:{station}` |
-| `ticket.status_changed` | Ticket status derived-change | `kitchen:{station}`, `restaurant:*` |
-| `table.status_changed` | Table status changes | `restaurant:*` |
-| `help_call.opened` | Guest requests help | `restaurant:*`, `table-session:*` — **live on `staff:{id}` since Stage 5** |
-| `help_call.acknowledged` | Waiter accepts | `restaurant:*`, `table-session:*` — **live on `staff:{id}` since Stage 5** |
-| `help_call.resolved` | Waiter resolves | `restaurant:*`, `table-session:*` — **live on `staff:{id}` since Stage 5** |
-| `bill.issued` | Bill generated | `restaurant:*`, `table-session:*` |
-| `bill.payment_requested` | Guest selects Pay by Cash | `restaurant:*`, `table-session:*` |
-| `bill.paid` | Bill fully paid | `restaurant:*`, `table-session:*` |
-| `payment.confirmed` | Staff confirms cash | `restaurant:*`, `table-session:*` |
-| `menu.availability_changed` | Owner toggles availability | `restaurant:*`, `table-session:*` (guest menu updates) |
-| `session.closed` | Session closes | `restaurant:*`, `table-session:*` |
+| `order.created` | Order committed | `restaurant:*`, `kitchen:*` (per station tickets), `table-session:*` — **live on `kitchen:{id}` + `staff:{id}` since Stages 4/5; live on `guest:{session}` since Stage 8** |
+| `order.status_changed` | Order status changes | `restaurant:*`, `table-session:*` — **live on `kitchen:{id}` + `staff:{id}` since Stages 4/5 (kitchen transitions AND staff serve); live on `guest:{session}` since Stage 8** |
+| `order.cancelled` | Guest cancels an order | `restaurant:*` (staff + kitchen), `guest:{session}` — **NEW in Stage 8.** Guest cancel did not broadcast before Stage 8; it does now, after commit, to both the restaurant channel and the cancelling session. Payload `{order_id, order_number, status: "cancelled", table_number}`. |
+| `order.item_ready` | An item becomes `ready` | `restaurant:*`, `table-session:*` — NOT BUILT (order-level status only; see § 6). |
+| `order.item_status_changed` | Any item status change | `restaurant:*`, `kitchen:*` — NOT BUILT (order-level status only). |
+| `ticket.created` | Ticket created (with the order) | `kitchen:{station}` — NOT BUILT (no kitchen_tickets/stations tables; see § 6). |
+| `ticket.status_changed` | Ticket status derived-change | `kitchen:{station}`, `restaurant:*` — NOT BUILT. |
+| `table.status_changed` | Table status changes | `restaurant:*` — NOT BUILT (no table-status transitions in v1). |
+| `help_call.opened` | Guest requests help | `restaurant:*`, `table-session:*` — **live on `staff:{id}` since Stage 5; live on `guest:{session}` since Stage 8** |
+| `help_call.acknowledged` | Waiter accepts | `restaurant:*`, `table-session:*` — **live on `staff:{id}` since Stage 5; live on `guest:{session}` since Stage 8** |
+| `help_call.resolved` | Waiter resolves | `restaurant:*`, `table-session:*` — **live on `staff:{id}` since Stage 5; live on `guest:{session}` since Stage 8** |
+| `bill.issued` | Bill generated | `restaurant:*`, `table-session:*` — NOT USED. The event is `bill.created` (below). |
+| `bill.created` | Bill generated | `staff:{id}` (Stage 6) + **`guest:{session}` (Stage 8)** |
+| `bill.updated` | Bill regenerated, splits changed, or status changed (request-payment, void, refund) | **`guest:{session}` ONLY — NEW in Stage 8.** NOT fired on every bill-regeneration fetch — the guest refetches the bill on order events and on reconnect. The staff channel keeps its own `bill.requested` for the payment request. Payload `{bill_id, status, ...}`; the guest uses it to invalidate the bill query and, for a void, to show "This bill was voided — request a new bill". |
+| `bill.payment_requested` | Guest selects Pay by Cash | `restaurant:*`, `table-session:*` — NOT USED. The staff event is `bill.requested`; the guest event is `bill.updated` with `status: "payment_requested"`. |
+| `bill.requested` | Guest requests payment (`issued → payment_requested`) | `staff:{id}` — live since Stage 6. (Guest sees the same moment as `bill.updated`.) |
+| `bill.paid` | Bill fully paid | `restaurant:*`, `table-session:*` — **live on `staff:{id}` since Stage 6; live on `guest:{session}` since Stage 8** |
+| `payment.recorded` | Staff confirms cash | `staff:{id}` (Stage 6) + **`guest:{session}` (Stage 8)**. NOT broadcast on an idempotency replay. |
+| `payment.confirmed` | Staff confirms cash | `restaurant:*`, `table-session:*` — NOT USED. The event is `payment.recorded`. |
+| `menu.availability_changed` | Owner toggles availability | `restaurant:*`, `table-session:*` (guest menu updates) — NOT BUILT (deferred in the Stage 8 brief; the guest menu refetches via REST). |
+| `session.closed` | Session closes | `restaurant:*`, `table-session:*` — NOT BUILT (no session-close endpoint in v1). |
+
+**Broadcast rule (all stages, unchanged):** every broadcast happens
+at router/service level AFTER the transaction commits. A failed or
+rolled-back request broadcasts nothing, and an idempotent replay
+broadcasts nothing (replayed order placement, replayed payment,
+replayed refund → no event). The complete guest event list is the ten
+types above marked `guest:{session}`: `order.created`,
+`order.status_changed`, `order.cancelled`, `help_call.opened`,
+`help_call.acknowledged`, `help_call.resolved`, `bill.created`,
+`bill.updated`, `payment.recorded`, `bill.paid`. Guest payloads
+contain only what the guest needs (order number/status/items, help-call
+status, bill totals/outstanding, receipt availability) — no staff-only
+data, no internal ids beyond what the guest REST APIs already return.
 
 ### 9.4 Client contract
 
@@ -663,6 +763,23 @@ All events use the envelope in `architecture.md` § 6.1
 - On disconnect: exponential backoff reconnect (1s, 2s, 4s, … max 30s),
   then re-fetch on reconnect.
 - On `version` gap within a channel: re-fetch that channel's state.
+
+**Guest contract (Stage 8, `useGuestSocket`):** push is primary;
+REST polling is ONLY a fallback while the socket is down — a slow
+30 s background refetch plus a refetch on window focus, both only
+while not live. Backoff is exponential WITH jitter (1 s doubling,
+±25 % jitter, 30 s cap). Exactly one socket per session (guarded
+against StrictMode double-mount + re-renders). On ticket
+expiry/consumption the hook fetches a FRESH ticket and reconnects.
+After 3 consecutive session failures (ticket fetch 401/410, or WS
+close 4401/4404) it stops and shows "Session expired — reopen via
+QR" instead of looping. While offline the UI shows "Reconnecting —
+showing last saved state" and disables nothing REST can still do.
+Guest tokens/tickets are never stored in localStorage and never
+logged. Events trigger targeted invalidations (`guest-orders`,
+`guest-order`, `guest-help-calls`, `guest-bill`, `guest-receipt`);
+the per-session `version` is used to ignore stale/out-of-order
+events — there is no event-replay system.
 
 ## 10. Idempotency (§ 7 of the brief — the contract)
 

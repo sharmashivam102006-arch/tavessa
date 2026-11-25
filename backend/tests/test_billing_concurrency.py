@@ -2,7 +2,7 @@
 
 REAL PostgreSQL ONLY (ephemeral pgserver), same fixture approach
 as tests/test_orders_concurrency.py: one module-scoped cluster
-(each initdb is expensive on the 512M /tmp tmpfs), per-request
+(each initdb is expensive), per-request
 sessions, delta assertions, and the slowapi limiter disabled only
 while this module's fixture is active.
 
@@ -21,6 +21,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 pgserver = pytest.importorskip("pgserver")
+
+from tests.pg_support import pg_cluster_dir, remove_pg_cluster_dir
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
@@ -47,8 +49,9 @@ def _pg_url(server) -> str:
 
 
 @pytest.fixture(scope="module")
-def pg_client(tmp_path_factory):
-    server = pgserver.get_server(str(tmp_path_factory.mktemp("pg6") / "pg"))
+def pg_client():
+    cluster_dir = pg_cluster_dir("pg6")
+    server = pgserver.get_server(str(cluster_dir))
     url = _pg_url(server)
     engine = create_engine(
         url, poolclass=QueuePool, pool_size=10, max_overflow=5
@@ -111,6 +114,7 @@ def pg_client(tmp_path_factory):
         limiter.enabled = was_enabled
         engine.dispose()
         server.cleanup()
+        remove_pg_cluster_dir(cluster_dir)
 
 
 def _place_and_bill(pg_client, table_number=5, quantity=1):

@@ -190,6 +190,13 @@ class BillSplit(IdMixin, TimestampMixin, Base):
     amount_paise: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="unpaid")
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 'equal' | 'custom' — how this split set was created (Stage 8).
+    # NULL = created before Stage 8 (unknown); treated as 'custom'
+    # at freeze time — never silently re-derived. The mode is what
+    # makes the freeze reconciliation safe: equal splits are
+    # re-derived from the frozen total, custom splits block the
+    # freeze when they no longer sum to it (billing_service).
+    mode: Mapped[str | None] = mapped_column(Text)
 
     bill: Mapped["Bill"] = relationship("Bill", back_populates="splits")
     payments: Mapped[list["Payment"]] = relationship(
@@ -198,6 +205,10 @@ class BillSplit(IdMixin, TimestampMixin, Base):
 
     __table_args__ = (
         CheckConstraint("amount_paise > 0", name="bill_split_amount_positive"),
+        CheckConstraint(
+            "mode IS NULL OR mode IN ('equal', 'custom')",
+            name="bill_split_mode_valid",
+        ),
         CheckConstraint(
             "status IN ('unpaid', 'payment_requested', 'paid')",
             name="bill_split_status_valid",

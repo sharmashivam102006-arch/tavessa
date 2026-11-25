@@ -20,8 +20,21 @@ Bill regeneration (Stage 6 decision 8, recorded in the roadmap):
   recompute totals). This is how a guest cancellation after
   billing is reflected, and how new orders join the open bill.
   Items already on ANOTHER bill (e.g. a paid bill) are never
-  re-billed. If the recomputed total changes, existing unpaid
-  splits are dropped (they summed to the old total).
+  re-billed.
+- Splits survive regeneration (Stage 8 — they used to be dropped
+  when the total changed, which silently threw away the guest's
+  chosen split). They are reconciled explicitly at the freeze
+  point instead: EQUAL splits are re-derived deterministically
+  from the frozen total (base = total // n, remainder 1p to the
+  earliest parts, over the unpaid splits only — paid splits never
+  move), CUSTOM splits that no longer sum to the frozen total
+  BLOCK the freeze with 409 ``split_reconciliation_required``
+  (the bill stays ``issued``; the guest updates the splits and
+  retries). A payment also refuses to run against a split sum
+  that does not equal the frozen total. See
+  ``_reconcile_splits_at_freeze`` and database-design.md § 3.18.
+  Splits created before Stage 8 have ``mode`` NULL and are treated
+  as custom (never silently re-derived).
 - Once the bill is ``payment_requested`` it is FROZEN. A ``paid``
   bill is frozen forever. New orders after a paid bill go on the
   NEXT bill, which contains only items not referenced by any
@@ -196,6 +209,7 @@ def _bill_out(db: Session, bill: Bill) -> BillOut:
                 amount_paise=s.amount_paise,
                 status=s.status,
                 paid_at=s.paid_at,
+                mode=s.mode,
             )
             for s in splits
         ],
@@ -428,11 +442,123 @@ def _build_lines(db: Session, bill: Bill, items: list[OrderItem]) -> int:
     return subtotal
 
 
-def freeze_tax_on_bill(db: Session, bill: Bill) -> None:
+def _reconciliation_error(
+    new_total_paise: int, splits_sum_paise: int
+) -> ApiError:
+    """409 ``split_reconciliation_required`` — the frozen total and
+    the split amounts no longer agree, and the splits are custom
+    (or unknown), so the server will not guess a new allocation.
+    The guest must update the splits and retry; nothing was
+    changed (the caller rolls the freeze transaction back)."""
+    return ApiError(
+        409,
+        "split_reconciliation_required",
+        "The bill total changed and the custom splits no longer add "
+        "up to it. Update the splits to match the new total and try "
+        "again — nothing has been charged.",
+        {
+            "expected_total_paise": new_total_paise,
+            "splits_sum_paise": splits_sum_paise,
+            "difference_paise": new_total_paise - splits_sum_paise,
+        },
+    )
+
+
+def _reconcile_splits_at_freeze(
+    db: Session, bill: Bill, new_total_paise: int, actor_user_id: UUID | None
+) -> None:
+    """Reconcile a bill's splits to its frozen total, in the freeze
+    transaction (Stage 8 policy — see the module docstring).
+
+    - No splits: nothing to reconcile.
+    - EQUAL splits: re-derived deterministically from the frozen
+      total (base = total // n, remainder 1p to the earliest parts
+      — the same rule as creation), over the UNPAID splits only:
+      paid splits never move, so the unpaid parts are re-derived
+      from (frozen total − paid split amounts). Equal means equal —
+      no customer meaning is lost. An audit row records the change.
+    - CUSTOM splits (or unknown/legacy mode, treated as custom):
+      if they no longer sum to the frozen total, the freeze is
+      BLOCKED (409 ``split_reconciliation_required``) — the caller
+      rolls back, the bill stays ``issued`` with its old totals,
+      and the guest updates the splits and retries.
+    - A frozen total below what is already paid on splits is also
+      a block: no positive allocation exists for the unpaid parts,
+      and the resolution needs staff (refund/void), not a guess.
+    """
+    splits = (
+        db.execute(
+            select(BillSplit)
+            .where(BillSplit.bill_id == bill.id)
+            .order_by(BillSplit.created_at)
+        )
+        .scalars()
+        .all()
+    )
+    if not splits:
+        return
+    paid = [s for s in splits if s.status == "paid"]
+    unpaid = [s for s in splits if s.status != "paid"]
+    paid_sum = sum(s.amount_paise for s in paid)
+    unpaid_sum = sum(s.amount_paise for s in unpaid)
+    remaining = new_total_paise - paid_sum
+    if not unpaid:
+        if paid_sum != new_total_paise:
+            raise _reconciliation_error(new_total_paise, paid_sum)
+        return
+    if remaining <= 0:
+        # The frozen total no longer covers what is already paid on
+        # splits. No allocation of the unpaid parts can fix this —
+        # it needs staff action (refund/void), not a silent guess.
+        raise _reconciliation_error(new_total_paise, paid_sum + unpaid_sum)
+    modes = {(s.mode or "custom") for s in unpaid}
+    if modes == {"equal"}:
+        n = len(unpaid)
+        base = remaining // n
+        extra = remaining % n
+        new_amounts = [base + (1 if i < extra else 0) for i in range(n)]
+        old_amounts = [s.amount_paise for s in unpaid]
+        if new_amounts != old_amounts:
+            for split, amount in zip(unpaid, new_amounts):
+                split.amount_paise = amount
+            write_audit(
+                db,
+                restaurant_id=bill.restaurant_id,
+                branch_id=bill.branch_id,
+                action="bill.splits_reconciled",
+                actor_user_id=actor_user_id,
+                entity_type="bill",
+                entity_id=bill.id,
+                details={
+                    "bill_number": bill.bill_number,
+                    "mode": "equal",
+                    "frozen_total_paise": new_total_paise,
+                    "old_amounts_paise": old_amounts,
+                    "new_amounts_paise": new_amounts,
+                },
+            )
+        return
+    if unpaid_sum != remaining:
+        raise _reconciliation_error(
+            new_total_paise, paid_sum + unpaid_sum
+        )
+
+
+def freeze_tax_on_bill(
+    db: Session, bill: Bill, actor_user_id: UUID | None = None
+) -> None:
     """Snapshot the tax policy + computed tax onto the bill at the
     freeze point. Idempotent: a bill that already has a snapshot
     (or was frozen unconfigured) is left alone — later config
-    changes never alter a frozen/paid bill."""
+    changes never alter a frozen/paid bill.
+
+    Stage 8: the freeze also reconciles the bill's splits to the
+    frozen total (``_reconcile_splits_at_freeze``). Equal splits
+    are re-derived; custom splits that no longer sum to the frozen
+    total BLOCK the freeze with 409 — the caller must roll the
+    transaction back (the bill stays ``issued``). The tax/total
+    assignment happens only AFTER reconciliation succeeds, so a
+    blocked freeze leaves the bill byte-identical."""
     from app.services.tax_service import (
         active_tax_config,
         compute_tax,
@@ -447,6 +573,7 @@ def freeze_tax_on_bill(db: Session, bill: Bill) -> None:
         return
     config = active_tax_config(db, bill.restaurant_id)
     tax_paise, total = compute_tax(bill.subtotal_paise, config)
+    _reconcile_splits_at_freeze(db, bill, total, actor_user_id)
     bill.tax_paise = tax_paise
     bill.total_paise = total
     for key, value in tax_snapshot_fields(config).items():
@@ -467,34 +594,38 @@ def _regenerate_issued_bill(db: Session, bill: Bill) -> Bill | None:
     old_total = bill.total_paise
     _build_lines(db, bill, items)
     if bill.total_paise != old_total:
-        # Existing splits summed to the old total; drop them rather
-        # than leave a bill whose splits no longer sum to its total.
-        db.execute(
-            delete(BillSplit).where(
-                BillSplit.bill_id == bill.id,
-                BillSplit.status == "unpaid",
-            )
-        )
         # The bill genuinely changed: bump the version so a client
         # holding the old bill can tell. A no-change regeneration
         # (the common re-fetch) leaves the version alone.
+        # Stage 8: splits are NOT dropped here any more. Dropping
+        # them silently threw away the guest's chosen split; instead
+        # they survive regeneration and are reconciled explicitly
+        # at the freeze point (equal splits re-derived, custom
+        # splits block the freeze with 409). Until then the bill
+        # may show splits summing to a different total than the
+        # current one — the guest updates them, or the freeze does.
         bill.version += 1
     db.commit()
     db.refresh(bill)
     return bill
 
 
-def _open_bill(db: Session, session_id: UUID) -> Bill | None:
-    return (
-        db.execute(
-            select(Bill).where(
-                Bill.table_session_id == session_id,
-                Bill.status.in_(("issued", "payment_requested")),
-            )
-        )
-        .scalars()
-        .first()
+def _open_bill(
+    db: Session, session_id: UUID, for_update: bool = False
+) -> Bill | None:
+    """The session's open bill (issued or payment_requested).
+    ``for_update`` takes the row lock first (PostgreSQL) so the
+    caller serialises against concurrent mutations of the same
+    bill — used by ``request_payment``, whose freeze must run
+    exactly once (Stage 8: two simultaneous freezes must not both
+    reconcile the splits and both write an audit row)."""
+    query = select(Bill).where(
+        Bill.table_session_id == session_id,
+        Bill.status.in_(("issued", "payment_requested")),
     )
+    if for_update:
+        query = query.with_for_update()
+    return db.execute(query).scalars().first()
 
 
 def _most_recent_paid_bill(db: Session, session_id: UUID) -> Bill | None:
@@ -593,8 +724,14 @@ def request_payment(db: Session, ctx: GuestContext) -> tuple[BillOut, bool]:
     payment_requested (its unpaid splits too). Creates NO payment
     row. Already payment_requested -> 200 idempotent return
     (transitioned=False, so the router broadcasts nothing twice).
-    Paid -> 409; no bill -> 404."""
-    bill = _open_bill(db, ctx.session.id)
+    Paid -> 409; no bill -> 404.
+
+    Stage 8: the bill row is locked BEFORE the status check, so a
+    concurrent freeze/payment serialises on the lock — the loser
+    re-reads the committed ``payment_requested`` bill and returns
+    it idempotently (transitioned=False), and the split
+    reconciliation + its audit row happen exactly once."""
+    bill = _open_bill(db, ctx.session.id, for_update=True)
     if bill is None:
         if _most_recent_paid_bill(db, ctx.session.id) is not None:
             raise ApiError(
@@ -625,7 +762,17 @@ def create_splits(
     """POST /guest/bill/splits — equal or custom, validated
     server-side. Replaces existing UNPAID splits in one transaction;
     refused once any split is paid or payment_requested -> 409.
-    Only while the bill is issued/payment_requested."""
+    Only while the bill is issued/payment_requested.
+
+    Stage 8: validation is against the LIVE total. While the bill
+    is ``issued`` and unpaid, its lines are recomputed first with
+    the tax config effective NOW (the same recompute as
+    regeneration) — the stored total may predate a tax change, and
+    validating a custom split against a stale total would bless a
+    split the freeze then has to block. A ``payment_requested``
+    bill is frozen and is validated against its stored total.
+    The new splits record their ``mode`` (equal/custom) so the
+    freeze knows how to reconcile them."""
     bill = _open_bill(db, ctx.session.id)
     if bill is None:
         raise ApiError(404, "bill_not_found", "No bill exists for this table yet.")
@@ -638,50 +785,73 @@ def create_splits(
                 f"{split.status}.",
                 {"split_status": split.status},
             )
-    if request.mode == "equal":
-        if request.parts is None:
-            raise ApiError(
-                422, "validation_failed",
-                "Equal split needs 'parts' (>= 2).", {"field": "parts"},
+    try:
+        if bill.status == "issued" and bill.amount_paid_paise == 0:
+            items = _billable_order_items(
+                db, ctx.session.id, exclude_bill_id=bill.id
             )
-        n = request.parts
-        base = bill.total_paise // n
-        remainder = bill.total_paise % n
-        amounts = [base + (1 if i < remainder else 0) for i in range(n)]
-    else:
-        amounts = request.amounts_paise
-        if amounts is None or len(amounts) < 2:
-            raise ApiError(
-                422, "validation_failed",
-                "Custom split needs at least 2 amounts.", {"field": "amountsPaise"},
-            )
-        if any(not isinstance(a, int) or a <= 0 for a in amounts):
-            raise ApiError(
-                422, "validation_failed",
-                "Each split amount must be a whole amount above ₹0.",
-                {"field": "amountsPaise"},
-            )
-        if sum(amounts) != bill.total_paise:
-            raise ApiError(
-                422, "split_sum_mismatch",
-                "The split amounts do not add up to the bill total.",
-                {
-                    "field": "amountsPaise",
-                    "split_sum_paise": sum(amounts),
-                    "total_paise": bill.total_paise,
-                },
-            )
-    db.execute(delete(BillSplit).where(BillSplit.bill_id == bill.id))
-    split_status = "unpaid" if bill.status == "issued" else "payment_requested"
-    for idx, amount in enumerate(amounts):
-        db.add(BillSplit(
-            bill_id=bill.id,
-            label=f"Split {idx + 1}",
-            amount_paise=amount,
-            status=split_status,
-        ))
-    bill.version += 1
-    db.commit()
+            if not items:
+                raise ApiError(
+                    409, "nothing_to_bill",
+                    "There is nothing to split — the bill has no items left.",
+                    {"bill_id": str(bill.id)},
+                )
+            # Recompute (no commit yet): lines + totals with the
+            # tax config effective now. The old splits are replaced
+            # below regardless, so nothing is lost by recomputing.
+            _build_lines(db, bill, items)
+        if request.mode == "equal":
+            if request.parts is None:
+                raise ApiError(
+                    422, "validation_failed",
+                    "Equal split needs 'parts' (>= 2).", {"field": "parts"},
+                )
+            n = request.parts
+            base = bill.total_paise // n
+            remainder = bill.total_paise % n
+            amounts = [base + (1 if i < remainder else 0) for i in range(n)]
+        else:
+            amounts = request.amounts_paise
+            if amounts is None or len(amounts) < 2:
+                raise ApiError(
+                    422, "validation_failed",
+                    "Custom split needs at least 2 amounts.",
+                    {"field": "amountsPaise"},
+                )
+            if any(not isinstance(a, int) or a <= 0 for a in amounts):
+                raise ApiError(
+                    422, "validation_failed",
+                    "Each split amount must be a whole amount above ₹0.",
+                    {"field": "amountsPaise"},
+                )
+            if sum(amounts) != bill.total_paise:
+                raise ApiError(
+                    422, "split_sum_mismatch",
+                    "The split amounts do not add up to the bill total.",
+                    {
+                        "field": "amountsPaise",
+                        "split_sum_paise": sum(amounts),
+                        "total_paise": bill.total_paise,
+                    },
+                )
+        db.execute(delete(BillSplit).where(BillSplit.bill_id == bill.id))
+        split_status = "unpaid" if bill.status == "issued" else "payment_requested"
+        for idx, amount in enumerate(amounts):
+            db.add(BillSplit(
+                bill_id=bill.id,
+                label=f"Split {idx + 1}",
+                amount_paise=amount,
+                status=split_status,
+                mode=request.mode,
+            ))
+        bill.version += 1
+        db.commit()
+    except ApiError:
+        # The live-total recompute above already mutated the bill's
+        # lines in this transaction; roll it back so a failed
+        # validation leaves the stored bill exactly as it was.
+        db.rollback()
+        raise
     db.refresh(bill)
     return _bill_out(db, bill)
 
@@ -1110,8 +1280,12 @@ def _record_payment_once(
         # payment_requested transition freezes its tax now, BEFORE
         # the amount-due check, so the payment validates against
         # the frozen total. (A payment_requested bill is already
-        # frozen — freeze_tax_on_bill is a no-op for it.)
-        freeze_tax_on_bill(db, bill)
+        # frozen — freeze_tax_on_bill is a no-op for it.) Stage 8:
+        # the freeze also reconciles splits to the frozen total
+        # (equal re-derived, custom mismatch -> 409), and the
+        # ApiError there rolls this whole payment transaction back
+        # (claim included) via the except handler below.
+        freeze_tax_on_bill(db, bill, actor_user_id=collected_by)
 
         splits = (
             db.execute(
@@ -1122,6 +1296,23 @@ def _record_payment_once(
             .scalars()
             .all()
         )
+        # Stage 8: never pay against a stale split amount. The
+        # freeze above reconciles splits to the frozen total; this
+        # guard is the in-transaction proof — a mismatch here means
+        # the freeze did not reconcile, so refuse rather than record.
+        if splits and sum(s.amount_paise for s in splits) != bill.total_paise:
+            raise ApiError(
+                409,
+                "split_reconciliation_required",
+                "The bill's splits no longer add up to its total. "
+                "Update the splits and try again — nothing has been charged.",
+                {
+                    "expected_total_paise": bill.total_paise,
+                    "splits_sum_paise": sum(s.amount_paise for s in splits),
+                    "difference_paise": bill.total_paise
+                    - sum(s.amount_paise for s in splits),
+                },
+            )
         target_split: BillSplit | None = None
         if splits:
             if request.bill_split_id is None:
@@ -1262,6 +1453,10 @@ def _record_payment_once(
         "bill_id": str(bill.id),
         "bill_number": bill.bill_number,
         "table_id": str(bill.table_id),
+        # Stage 8: the guest channel is keyed by table session, so
+        # the router needs the session id to fan the payment out to
+        # the right table's guest sockets (and no other table's).
+        "table_session_id": str(bill.table_session_id),
         "payment_id": str(payment.id),
         "receipt_number": payment.receipt_number,
         "amount_paise": payment.amount_paise,

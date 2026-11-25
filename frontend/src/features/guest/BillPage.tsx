@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 import {
   Banknote,
@@ -18,6 +18,8 @@ import {
   requestCashPayment,
 } from "@/features/guest/api/guestApi";
 import { useGuestBill, useGuestReceipt } from "@/features/guest/hooks/useGuest";
+import { useGuestSocketStatus } from "@/features/guest/hooks/useGuestSocket";
+import { GuestConnectionLine } from "@/features/guest/components/ConnectionIndicator";
 import { equalSplit, validateCustomSplit } from "@/features/guest/lib/split";
 import { EmptyState, LoadingState } from "@/features/guest/components/states";
 import { Button } from "@/components/ui/button";
@@ -49,8 +51,34 @@ export function BillPage() {
   const { tableToken = "" } = useParams<{ tableToken: string }>();
   const billQuery = useGuestBill(tableToken);
   const bill: Bill | undefined = billQuery.data?.data;
-  const isPaid = bill?.status === "paid";
+  // Paid, refunded and partially_refunded bills all have a receipt
+  // (the receipt endpoint serves all three — Stage 7).
+  const isPaid =
+    bill?.status === "paid" ||
+    bill?.status === "refunded" ||
+    bill?.status === "partially_refunded";
   const receiptQuery = useGuestReceipt(tableToken, isPaid === true);
+  // Stage 8: a voided bill never comes back from GET /guest/bill
+  // (it is neither open nor paid), so the void is carried by the
+  // live ``bill.updated`` event: remember the voided bill id and
+  // offer to request a new bill. A fresh bill clears the banner.
+  const { lastEvent } = useGuestSocketStatus();
+  const [voidedBillId, setVoidedBillId] = useState<string | null>(null);
+  useEffect(() => {
+    if (
+      lastEvent?.type === "bill.updated" &&
+      lastEvent.data.status === "voided" &&
+      lastEvent.data.bill_id
+    ) {
+      setVoidedBillId(lastEvent.data.bill_id);
+    }
+  }, [lastEvent]);
+  useEffect(() => {
+    if (bill && voidedBillId && bill.id !== voidedBillId) {
+      setVoidedBillId(null);
+    }
+  }, [bill, voidedBillId]);
+  const showVoidedBanner = voidedBillId !== null && bill?.id !== voidedBillId;
 
   const [splitMode, setSplitMode] = useState<"equal" | "custom">("equal");
   const [equalParts, setEqualParts] = useState(2);
@@ -135,6 +163,30 @@ export function BillPage() {
         Itemised, from your table&apos;s orders. Cash only — no UPI, cards or
         online payment in Tavessa v1.
       </p>
+      <GuestConnectionLine />
+
+      {showVoidedBanner ? (
+        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 shadow-sm">
+          <h2 className="text-sm font-semibold text-amber-800">
+            This bill was voided — request a new bill
+          </h2>
+          <p className="mt-1 text-sm text-amber-800">
+            The bill was voided by the restaurant (for example, the order
+            changed). Nothing was charged. Your orders are still open —
+            request a new bill and it is generated from them.
+          </p>
+          <Button
+            className="mt-3"
+            onClick={() => {
+              setVoidedBillId(null);
+              void handleRequestBill();
+            }}
+            disabled={busy}
+          >
+            {busy ? "Requesting…" : "Request a new bill"}
+          </Button>
+        </div>
+      ) : null}
 
       {billQuery.isPending ? (
         <div className="mt-4"><LoadingState label="Loading your bill…" /></div>
@@ -211,8 +263,17 @@ export function BillPage() {
                 <dd className="tabular-nums">{formatINR(bill.subtotalPaise)}</dd>
               </div>
               <div className="flex justify-between text-stone-500">
-                <dt>Tax</dt>
-                <dd>Not configured yet (D1)</dd>
+                <dt>
+                  Tax
+                  {bill.taxRateBpsSnapshot != null && bill.taxLabelSnapshot
+                    ? ` (${bill.taxLabelSnapshot}, ${(bill.taxRateBpsSnapshot / 100).toFixed(1)}%)`
+                    : ""}
+                </dt>
+                <dd>
+                  {bill.taxRateBpsSnapshot != null
+                    ? formatINR(bill.taxPaise)
+                    : "Not configured yet (D1)"}
+                </dd>
               </div>
               <div className="flex justify-between text-base font-semibold">
                 <dt>Total</dt>

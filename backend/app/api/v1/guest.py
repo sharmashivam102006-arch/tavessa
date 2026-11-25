@@ -6,13 +6,19 @@ token to a session and every query filters by that session. A guest
 asking for another session's order gets a 404, not a 403 (§ 11).
 """
 from uuid import UUID
+from datetime import datetime, timedelta, timezone
+import secrets
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
+from app.auth.models import WsTicket
+from app.auth.router import WS_TICKET_TTL_SECONDS
+from app.auth.tokens import hash_ws_ticket
 from app.core.deps import get_db, get_guest_context
 from app.core.rate_limit import SESSION_OPEN_LIMIT, limiter
 from app.realtime.manager import manager
+from app.schemas.auth import WsTicketResponse
 from app.schemas.billing import (
     BillDataResponse,
     ReceiptDataResponse,
@@ -22,6 +28,7 @@ from app.schemas.guest import (
     GuestMenuResponse,
     GuestSessionResponse,
     HelpCallDataResponse,
+    HelpCallListResponse,
     HelpCallRequest,
     OrderDataResponse,
     OrderListResponse,
@@ -80,6 +87,57 @@ def guest_order(
     return order_service.get_order(db, ctx, order_id)
 
 
+@router.get("/guest/help-calls", response_model=HelpCallListResponse)
+def list_help_calls(
+    ctx: GuestContext = Depends(get_guest_context),
+    db: Session = Depends(get_db),
+) -> HelpCallListResponse:
+    """The session's help calls, newest first — the guest's REST
+    source of truth for assistance status (Stage 8)."""
+    return help_service.list_help_calls(db, ctx)
+
+
+@router.post("/guest/ws/tickets", response_model=WsTicketResponse, status_code=201)
+def issue_guest_ws_ticket(
+    ctx: GuestContext = Depends(get_guest_context),
+    db: Session = Depends(get_db),
+) -> WsTicketResponse:
+    """Issue a single-use WebSocket ticket for the guest channel
+    (Stage 8). Authenticated by the existing guest table-token
+    mechanism (``X-Table-Token`` header) — the same dependency as
+    every other guest endpoint, so an invalid token is a 401 and
+    an expired session a 410 before any ticket is minted.
+
+    The ticket is a cryptographically random opaque value
+    (``secrets.token_urlsafe``); only its SHA-256 hash is stored.
+    Single-use, ~60s expiry (``WS_TICKET_TTL_SECONDS``, the same
+    TTL as staff/kitchen tickets). It is bound to the exact
+    restaurant, branch, table and active session — the binding
+    lives server-side in the ``ws_tickets`` row (``user_id`` NULL,
+    ``table_session_id`` set); the client never sees the session
+    UUID. The raw ticket is returned exactly once and never
+    logged. A guest ticket can never open a staff/kitchen channel
+    (channel is checked at connect, 4403)."""
+    raw = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        seconds=WS_TICKET_TTL_SECONDS
+    )
+    db.add(
+        WsTicket(
+            user_id=None,
+            restaurant_id=ctx.restaurant.id,
+            channel="guest",
+            ticket_hash=hash_ws_ticket(raw),
+            expires_at=expires_at,
+            table_session_id=ctx.session.id,
+        )
+    )
+    db.commit()
+    return WsTicketResponse(
+        data={"ticket": raw, "channel": "guest", "expires_at": expires_at}
+    )
+
+
 @router.post("/guest/help-calls", response_model=HelpCallDataResponse, status_code=201)
 async def create_help_call(
     body: HelpCallRequest,
@@ -90,17 +148,26 @@ async def create_help_call(
     # Broadcast AFTER the help-call transaction committed (the
     # service commits internally before returning). Staff on the
     # same restaurant channel see it; a failed creation broadcasts
-    # nothing.
+    # nothing. Stage 8: the requesting table's guest sockets get
+    # it too, session-scoped (their Help page shows "open" live).
+    help_payload = {
+        "help_call_id": str(result.data.id),
+        "table_number": ctx.table.number,
+        "type": result.data.type,
+        "status": result.data.status,
+    }
     await manager.broadcast(
         ctx.restaurant.id,
         "help_call.opened",
         ctx.session.table_id,
-        {
-            "help_call_id": str(result.data.id),
-            "table_number": ctx.table.number,
-            "type": result.data.type,
-            "status": result.data.status,
-        },
+        help_payload,
+    )
+    await manager.broadcast_guest(
+        ctx.session.id,
+        "help_call.opened",
+        ctx.restaurant.id,
+        ctx.session.table_id,
+        help_payload,
     )
     return result
 
@@ -124,17 +191,27 @@ async def guest_create_bill(
     bill does not (it already exists)."""
     bill, created = billing_service.get_or_create_bill(db, ctx)
     if created:
+        created_payload = {
+            "bill_id": str(bill.id),
+            "bill_number": bill.bill_number,
+            "status": bill.status,
+            "table_number": ctx.table.number,
+            "total_paise": bill.total_paise,
+        }
         await manager.broadcast(
             ctx.restaurant.id,
             "bill.created",
             ctx.session.table_id,
-            {
-                "bill_id": str(bill.id),
-                "bill_number": bill.bill_number,
-                "status": bill.status,
-                "table_number": ctx.table.number,
-                "total_paise": bill.total_paise,
-            },
+            created_payload,
+        )
+        # Stage 8: the table's guest sockets see their bill appear,
+        # session-scoped.
+        await manager.broadcast_guest(
+            ctx.session.id,
+            "bill.created",
+            ctx.restaurant.id,
+            ctx.session.table_id,
+            created_payload,
         )
     return BillDataResponse(data=bill)
 
@@ -159,24 +236,36 @@ async def guest_request_payment(
     idempotent return; paid -> 409."""
     bill, transitioned = billing_service.request_payment(db, ctx)
     if transitioned:
+        requested_payload = {
+            "bill_id": str(bill.id),
+            "bill_number": bill.bill_number,
+            "status": bill.status,
+            "table_number": ctx.table.number,
+            "total_paise": bill.total_paise,
+            "outstanding_paise": bill.outstanding_paise,
+        }
         await manager.broadcast(
             ctx.restaurant.id,
             "bill.requested",
             ctx.session.table_id,
-            {
-                "bill_id": str(bill.id),
-                "bill_number": bill.bill_number,
-                "status": bill.status,
-                "table_number": ctx.table.number,
-                "total_paise": bill.total_paise,
-                "outstanding_paise": bill.outstanding_paise,
-            },
+            requested_payload,
+        )
+        # Stage 8: the guest channel carries status changes as
+        # ``bill.updated`` (the guest event list has no
+        # bill.requested) — the Bill page shows "payment requested"
+        # live, session-scoped.
+        await manager.broadcast_guest(
+            ctx.session.id,
+            "bill.updated",
+            ctx.restaurant.id,
+            ctx.session.table_id,
+            requested_payload,
         )
     return BillDataResponse(data=bill)
 
 
 @router.post("/guest/bill/splits", response_model=BillDataResponse)
-def guest_create_splits(
+async def guest_create_splits(
     body: SplitCreateRequest,
     ctx: GuestContext = Depends(get_guest_context),
     db: Session = Depends(get_db),
@@ -184,7 +273,26 @@ def guest_create_splits(
     """Equal / custom splits, validated server-side. Replaces
     existing unpaid splits; refused once a split is paid or
     payment_requested (409)."""
-    return BillDataResponse(data=billing_service.create_splits(db, ctx, body))
+    bill = billing_service.create_splits(db, ctx, body)
+    # Stage 8 (NEW — splits changed nothing before): the guest
+    # channel gets ``bill.updated`` so the Bill page shows the new
+    # split amounts live. Broadcast AFTER the splits transaction
+    # committed (the service commits internally before returning).
+    await manager.broadcast_guest(
+        ctx.session.id,
+        "bill.updated",
+        ctx.restaurant.id,
+        ctx.session.table_id,
+        {
+            "bill_id": str(bill.id),
+            "bill_number": bill.bill_number,
+            "status": bill.status,
+            "table_number": ctx.table.number,
+            "total_paise": bill.total_paise,
+            "outstanding_paise": bill.outstanding_paise,
+        },
+    )
+    return BillDataResponse(data=bill)
 
 
 @router.get("/guest/bill/receipt", response_model=ReceiptDataResponse)

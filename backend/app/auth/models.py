@@ -112,12 +112,23 @@ class WsTicket(IdMixin, TimestampMixin, Base):
     """Single-use WebSocket ticket. The ticket handed to the client
     is an opaque random string; only its SHA-256 hash is stored
     (``ticket_hash``, unique). Expires ~60s after issue; ``used_at``
-    is set on first (and only) use. Never logged."""
+    is set on first (and only) use. Never logged.
+
+    Stage 8: guest tickets bind to a table session instead of a
+    user — ``user_id`` is NULL and ``table_session_id`` is set for
+    channel 'guest'; staff/kitchen tickets keep ``user_id`` set and
+    ``table_session_id`` NULL. A ticket is only ever valid for the
+    channel it was issued for (validate_ws_ticket enforces this)."""
 
     __tablename__ = "ws_tickets"
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id"), nullable=False, index=True
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True, index=True
+    )
+    # Guest tickets only (Stage 8): the exact active table session
+    # this ticket is bound to. NULL for staff/kitchen tickets.
+    table_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("table_sessions.id"), index=True
     )
     restaurant_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("restaurants.id"), nullable=False, index=True
@@ -131,7 +142,8 @@ class WsTicket(IdMixin, TimestampMixin, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "channel IN ('kitchen', 'staff')", name="ws_ticket_channel_valid"
+            "channel IN ('kitchen', 'staff', 'guest')",
+            name="ws_ticket_channel_valid",
         ),
         Index("ix_ws_tickets_hash", "ticket_hash"),
     )

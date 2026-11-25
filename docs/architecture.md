@@ -349,6 +349,43 @@ closed immediately.
 > fresh ticket on every (re)connect (tickets are single-use) and
 > sends dev keys only when `import.meta.env.DEV` is true, so a
 > production build never includes them.
+>
+> **Stage 8 status (25 Nov 2026):** the third endpoint is live —
+> `GET /ws/guest` (guest ticket auth, see `api-plan.md` § 9.1). The
+> SAME `ConnectionManager` was extended, not replaced:
+> `connect_guest` / `disconnect_guest` / `broadcast_guest` keyed by
+> `table_session_id`, alongside the restaurant-keyed staff/kitchen
+> sets. A guest socket receives ONLY its own session's events;
+> staff/kitchen sockets never receive guest-scoped events and vice
+> versa — isolation is structural, not a filter. The guest ticket is
+> issued by `POST /api/v1/guest/ws/tickets` (X-Table-Token): same
+> opaque / SHA-256 / single-use / 60 s shape as staff/kitchen, but
+> `user_id` is NULL and the ticket is bound to the exact restaurant,
+> branch, table and active session (`ws_tickets.table_session_id`,
+> migration `c8d3e5f6a7b8` — `user_id` nullable, channel CHECK
+> widened to `kitchen|staff|guest`). Guest events (10 types):
+> `order.created`, `order.status_changed`, `order.cancelled` (NEW —
+> guest cancel did not broadcast before Stage 8),
+> `help_call.opened` / `.acknowledged` / `.resolved`,
+> `bill.created`, `bill.updated` (NEW — splits changed or status
+> changed; NOT on every bill-regeneration fetch),
+> `payment.recorded`, `bill.paid`. All are broadcast at router
+> level AFTER commit, never on rollback, never on idempotent replay.
+> The frontend (`useGuestSocket`, owned once by `GuestLayout` via
+> `GuestSocketProvider`) fetches a fresh ticket per (re)connect,
+> backs off exponentially WITH jitter (1 s → 30 s), invalidates the
+> guest TanStack Query keys on (re)connect and on every event, and
+> refetches via REST; while the socket is down it falls back to a
+> slow 30 s background refetch + refetch on window focus, and after
+> 3 consecutive session failures (401/410 ticket fetch, or WS close
+> 4401/4404) it stops and shows "Session expired — reopen via QR".
+> The old 20 s / 10 s REST polling intervals on the guest order and
+> bill pages were removed — push is primary, polling is fallback
+> only (the roadmap's "replace polling with push, polling remains
+> as fallback" choice, recorded). `version` for the guest channel
+> is a per-SESSION in-memory counter; the hook ignores events with
+> `version` ≤ the highest seen. The single-process limitation is
+> unchanged (see § 6.3).
 
 **Event envelope (all events):**
 
@@ -377,6 +414,7 @@ authority.
 | `kitchen:{restaurant_id}:{station}` | KDS filtered view (subscription filter, not a separate truth) | `ticket.*` for that station |
 | `kitchen:{restaurant_id}` | KDS | **Stage 4, LIVE:** `order.created`, `order.status_changed` |
 | `staff:{restaurant_id}` | Staff board | **Stage 5, LIVE:** `order.created`, `order.status_changed` (incl. kitchen transitions), `help_call.opened`, `help_call.acknowledged`, `help_call.resolved`. **Stage 6, LIVE:** `bill.created`, `bill.requested`, `payment.recorded`, `bill.paid`. |
+| `guest:{table_session_id}` | The guest of that session ONLY | **Stage 8, LIVE:** `order.created`, `order.status_changed`, `order.cancelled`, `help_call.opened`, `help_call.acknowledged`, `help_call.resolved`, `bill.created`, `bill.updated`, `payment.recorded`, `bill.paid`. Session-scoped; no other session ever receives these events. |
 
 Authorisation is checked at subscription time, per channel, against the
 caller's restaurant and (for guests) table session. A guest socket cannot
@@ -395,21 +433,33 @@ sufficient, simpler, and has no extra infrastructure to operate.
 2. A background worker is introduced that must publish events, or
 3. Caching of a hot read is measured to be necessary (not assumed).
 
-At that point, add Redis as a **pub/sub broker behind the same `EventBus`
-interface** (`publish(channel, event)` / `subscribe(channel)`), with the
-in-process manager as the local fan-out. The service code does not change;
-only the broker implementation does. Docker Compose gains a `redis` service
-then, not before. Do not add Redis in Stage 1 "because realtime usually needs
+At that point, add Redis as a **pub/sub broker behind the same
+`ConnectionManager` API** (`broadcast` / `broadcast_guest` /
+`connect` / `disconnect`), with the in-process manager as the local
+fan-out. The service code does not change; only the broker
+implementation does. Docker Compose gains a `redis` service then,
+not before. Do not add Redis in Stage 1 "because realtime usually needs
 it" — it does not, at one replica.
+
+> **Stage 8 decision (25 Nov 2026): no `EventBus` interface.** The
+> roadmap's Stage 8 work list called for an `EventBus` interface with
+> Redis behind it. The brief overrules that: the existing
+> `ConnectionManager` already IS the bus — adding an abstraction
+> over one implementation buys nothing at one replica. If a second
+> replica ever forces Redis (§ 6.3 above), the broker is added
+> behind the manager's existing API, not behind a new interface.
 
 ### 6.4 Reconnection and ordering
 
 - Clients reconnect with exponential backoff and, on reconnect, re-fetch their
   current state via REST before rendering live updates again.
-- Events carry a per-restaurant monotonically increasing `version` (from a
-  `restaurant_events` sequence or the DB — implementation detail in Stage 8).
+- Events carry a per-restaurant monotonically increasing `version` (in-memory
+  counter in the `ConnectionManager`; the guest channel uses a per-SESSION
+  counter instead — each session's events are ordered within that session).
   A client that sees a gap re-fetches. Events are not guaranteed ordered
-  across channels; they are ordered within a channel by `version`.
+  across channels; they are ordered within a channel by `version`. The
+  guest hook additionally ignores events with `version` ≤ the highest seen
+  (stale/out-of-order protection, not an event-replay system).
 - No client action (e.g. "mark paid") is ever performed from a WebSocket
   message alone. Actions are REST calls; WebSocket only announces that an
   action happened.

@@ -103,6 +103,31 @@ export function requestHelpCall(tableToken: string, request: HelpCallRequest) {
   );
 }
 
+/** The session's help calls, newest first (Stage 8: GET
+ * /guest/help-calls) — the guest's REST source of truth for
+ * assistance status; the Help page refetches this after a socket
+ * reconnect instead of trusting the event alone. */
+export function fetchGuestHelpCalls(tableToken: string) {
+  return api.get<{ data: HelpCall[] }>(`${V1}/guest/help-calls`, {
+    headers: tableHeaders(tableToken),
+  });
+}
+
+/** Single-use WebSocket ticket for the guest channel (Stage 8:
+ * POST /guest/ws/tickets). Authenticated by the table token; the
+ * ticket is bound server-side to this table's active session and
+ * expires in ~60s. The raw ticket is never stored (no localStorage)
+ * and never logged. */
+export function fetchGuestWsTicket(tableToken: string) {
+  return api.post<{
+    data: { ticket: string; channel: string; expiresAt: string };
+  }>(
+    `${V1}/guest/ws/tickets`,
+    {},
+    { headers: tableHeaders(tableToken) },
+  );
+}
+
 /** The session's open bill (api-plan.md § 7.1 as built in Stage 6:
  * GET /guest/bill). 404 when no bill exists yet. */
 export function fetchGuestBill(tableToken: string) {
