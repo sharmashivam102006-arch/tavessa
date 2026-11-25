@@ -584,9 +584,16 @@ def daily_cash_report(
 # Bill void + cash refunds
 # ----------------------------------------------------------------------
 
-def _get_bill_scoped(db: Session, restaurant_id: UUID, bill_id: UUID) -> Bill:
-    bill = db.get(Bill, bill_id)
-    if bill is None or bill.restaurant_id != restaurant_id:
+def _get_bill_scoped(
+    db: Session, restaurant_id: UUID, bill_id: UUID, for_update: bool = False
+) -> Bill:
+    query = select(Bill).where(
+        Bill.id == bill_id, Bill.restaurant_id == restaurant_id
+    )
+    if for_update:
+        query = query.with_for_update()
+    bill = db.execute(query).scalars().first()
+    if bill is None:
         raise ApiError(404, "not_found", "Bill not found.")
     return bill
 
@@ -596,8 +603,14 @@ def void_bill(db: Session, user: User, bill_id: UUID, reason: str):
     payment_requested with ZERO confirmed payments (any payment ->
     409 'refund required first'). A repeat void -> 409 with the
     bill. The bill is kept (never deleted); its items become
-    billable again via the Stage 7 billable-items rule."""
-    bill = _get_bill_scoped(db, user.restaurant_id, bill_id)
+    billable again via the Stage 7 billable-items rule.
+
+    Stage 9: the bill row is locked BEFORE the status check, so
+    concurrent voids serialise — the losers re-read the committed
+    ``voided`` bill and 409 instead of all succeeding (the old
+    ``db.get`` read had no lock: eight simultaneous voids all
+    returned 200)."""
+    bill = _get_bill_scoped(db, user.restaurant_id, bill_id, for_update=True)
     if user.branch_id is not None and bill.branch_id != user.branch_id:
         raise ApiError(403, "forbidden", "This bill belongs to another branch.")
     if bill.status == "voided":

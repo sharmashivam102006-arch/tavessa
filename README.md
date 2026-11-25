@@ -476,6 +476,7 @@ The project was built incrementally across 8 stages:
 6. **Stage 6** — Billing: bills, splits, cash payments, receipts, billing queue
 7. **Stage 7** — Admin panel: JWT auth, RBAC, users, menu CRUD, tax config, voids, refunds, audit logs
 8. **Stage 8** — Guest real-time: guest WebSocket tickets, live tracking, split/tax reconciliation
+9. **Stage 9** — Testing, security & reliability: full test pyramid, security pass with evidence, reliability failure modes, load sanity
 
 ---
 

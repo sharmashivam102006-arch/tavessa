@@ -563,47 +563,142 @@ guest's behalf is a possible future addition, not a v1 capability — do
 not build it speculatively. Reviews are not built (moderation D6
 deferred).
 
-## 9. Security — checklist (enforced in Stage 9, designed now)
+## 9. Security — checklist (verified in Stage 9, 25 Nov 2026)
 
-- [ ] Password hashing (Argon2id / bcrypt-12), no plaintext secrets anywhere.
-- [ ] JWT: short access, rotating refresh, revocation on logout / role change /
-      deactivation, `jti` tracking.
-- [ ] QR tokens: random, hashed at rest, revocable, scoped, expirable.
-- [ ] RBAC on every route; tenant scoping on every query; tests that prove a
-      cross-tenant and cross-table read fails (see § 10).
-- [ ] Server-side validation of all input (Pydantic), including: item/variant/
-      add-on existence, availability, quantities (≥ 1, ≤ a sane max), price
-      recomputation, bill-split sums, payment amount ≤ amount due.
-- [ ] SQL injection: prevented by SQLAlchemy parameterisation; no raw SQL with
-      string interpolation. Any raw SQL is reviewed.
-- [ ] CORS: explicit allowlist from env (`CORS_ORIGINS`), credentials only for
-      listed origins, no `*` with credentials.
-- [ ] Rate limiting: login and order-placement endpoints rate-limited
-      (SlowAPI or equivalent, in-process in v1). QR-token brute-force is
-      rate-limited per IP.
-- [ ] Security headers: `X-Content-Type-Options`, `X-Frame-Options`,
-      `Content-Security-Policy` (appropriate for the frontend), HSTS in
-      production (via reverse proxy / middleware).
-- [ ] Audit logging for: login failures, payment confirmation, refunds, bill
-      voids, menu price changes, staff role changes, QR rotation, session
-      closure by staff.
-- [ ] No secrets in git, logs, or the frontend bundle. `.env.example` contains
-      placeholders only.
-- [ ] Dependencies pinned and scanned (`pip-audit` / Dependabot or equivalent)
-      in CI from Stage 1.
-- [ ] Uploaded food images: validated type/size, stored outside the web root
-      with a served URL (local `uploads/` in dev; object storage is a later
-      deployment decision, not a v1 code change — the storage interface is
-      abstracted).
+Every item below was re-run in Stage 9 with evidence — a test file, a
+grep, or a cited check. "Verified" means the evidence exists in the
+repo; see the Stage 9 report in `development-roadmap.md` for the full
+per-item list.
+
+- [x] Password hashing (Argon2id, no bcrypt fallback — `core/security.py`;
+  `tests/test_security.py`). No plaintext secrets anywhere in code.
+- [x] JWT: 15-min access, rotating refresh, revocation on logout /
+  change-password / deactivation, `jti` tracking; reuse of a revoked
+  refresh token revokes the whole family (`tests/test_jwt_security.py`).
+  Pinned limit: an already-issued access token from a revoked family
+  stays valid until its 15-min expiry (no server revocation list — by
+  design, recorded in the test).
+- [x] QR tokens: random, SHA-256 hashed at rest, revocable, scoped,
+  expirable (`tests/test_qr_tokens.py`; rotation/revoke/expired paths
+  tested). QR rotation itself is still a deferred owner action (R10).
+- [x] RBAC on every route; tenant scoping on every query; negative tests
+  proving cross-tenant and cross-table reads fail
+  (`tests/test_rbac_matrix.py` — role × endpoint matrix, 401/403/404 as
+  designed per `api-plan.md` § 2).
+- [x] Server-side validation of all input (Pydantic), including:
+  item/variant/add-on existence, availability, quantities (≥ 1, ≤ a
+  sane max), price recomputation, bill-split sums, payment amount ≤
+  amount due (`tests/test_input_validation.py`; rejected requests leave
+  the DB unchanged). No endpoint accepts a client-supplied price
+  (`tests/test_no_client_price.py`; admin-set menu prices are the only
+  legitimate exception).
+- [x] SQL injection: prevented by SQLAlchemy parameterisation; no raw SQL
+  with string interpolation in `backend/app` (grep, Stage 9).
+- [x] CORS: explicit allowlist from env (`CORS_ORIGINS`), credentials
+  only for listed origins, no `*` with credentials
+  (`tests/test_security_headers_cors.py`). Stage 9 fix: Starlette's
+  `CORSMiddleware` sent `Access-Control-Allow-Credentials: true` even
+  for unlisted origins — the headers middleware in `app/main.py` now
+  strips it unless an ACAO header was actually set.
+- [x] Rate limiting: login, order placement, session-open, kitchen
+  PATCH, staff serve/payment/help (SlowAPI, in-process; limits verified
+  with the limiter enabled — `tests/test_rate_limits.py`,
+  `tests/test_rate_limits_security.py`). Admin endpoints have NO
+  limiter (recorded, not changed — admin actions require JWT + role;
+  adding limits is a Stage 10 decision if abuse is observed).
+- [x] Security headers: `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` on all
+  responses; `Cache-Control: no-store` on `/api/*` only (middleware in
+  `app/main.py`, `tests/test_security_headers_cors.py`). No CSP — the
+  Vite frontend serves inline assets a CSP would break, and a CSP for
+  the JSON-only API buys nothing (recorded in code + test). No HSTS —
+  no TLS termination in dev/sandbox; a Stage 10 deployment decision
+  (reverse proxy).
+- [x] Audit logging for: login success/failure, payment confirmation,
+  refunds, bill voids, menu price changes, staff role changes, QR
+  rotation, session closure (`tests/test_audit_coverage.py`). Failed
+  operations write no success row. Pinned: unknown-email login writes
+  no audit row (no tenant to scope it to).
+- [x] No secrets in git, logs, or the frontend bundle. `.env.example`
+  contains placeholders only. Stage 9 secret scan (gitleaks 8.28.0 +
+  trufflehog + `git log -p` greps over all 13 commits): no private keys,
+  no real SECRET_KEY values, no Render/LiveKit tokens, `.env` never
+  tracked. **Open item for Shivam:** 4 demo passwords
+  (`OwnerPass123`/`WaiterPass123`/`KitchenPass123`) in the Stage 7/8
+  verification scripts (`backend/scripts/verify_stage7_live.py`,
+  `screenshots_stage7.py`, `verify_stage8_e2e.py`) — throwaway local
+  demo accounts against ephemeral localhost databases; the seed creates
+  no users with them and no deployment uses them. Left in place
+  deliberately (no history rewrite on a public repo without his call);
+  see the Stage 9 report for the decision options.
+- [x] Dependencies pinned and scanned (`pip-audit` / `npm audit`) in CI
+  from Stage 9 (`.github/workflows/ci.yml`). See "Dependency scan"
+  below.
+- [ ] Uploaded food images: validated type/size, stored outside the web
+  root with a served URL — **not applicable in v1**: menu image upload
+  is deferred (no upload endpoint exists, so there is nothing to
+  validate; recorded, not claimed).
+
+### Dependency scan (Stage 9, 25 Nov 2026)
+
+- `pip-audit -r backend/requirements.txt`: **3 findings in 2 packages,
+  both accepted with reasons, both with no fix released**:
+  - `python-jose 3.5.0`, PYSEC-2026-4298 (incomplete fix for
+    CVE-2024-33663 — HMAC init accepts unarmoured DER public keys):
+    not exploitable here — `tokens.py` decodes with
+    `algorithms=[settings.jwt_algorithm]` (HS256 only) and the key is
+    the server-side `SECRET_KEY`, never attacker-controlled.
+  - `ecdsa 0.19.2`, PYSEC-2026-1325 (Minerva timing attack on P-256
+    signing): the app never signs with ECDSA (HS256 only; `ecdsa` is
+    only a transitive dependency of `python-jose`); upstream has no
+    planned fix.
+  - CI runs `pip-audit` with `--ignore` for exactly these two IDs and
+    fails on any new finding.
+- `npm audit --audit-level=high` (frontend): **0 vulnerabilities**.
+
+### RLS decision (Stage 9, 25 Nov 2026) — NO for v1
+
+PostgreSQL Row-Level Security as defence-in-depth for tenant isolation
+was evaluated and **declined for v1**. Evidence: app-level scoping is
+the mechanism (§ 5) and is now covered by negative tests on every
+surface (RBAC matrix, cross-restaurant, cross-table); the app uses one
+shared engine/pool user from a single `DATABASE_URL` with no
+per-request DB role and no `SET ROLE`/`SET LOCAL app.*` anywhere
+(`app/db/session.py`); an RLS migration would have to touch 17
+`restaurant_id` columns across 14 tenant tables plus 6 child tables
+that carry no `restaurant_id` at all (`BillItem`, `BillSplit`,
+`OrderItem`, `OrderItemAddon`, `ItemVariant`, `ItemAddon` — scoped via
+parents, so policies would need joins or new columns), plus the seed,
+the bootstrap CLI, the 5 Alembic migrations, and the pgserver test
+fixtures. RLS would add a second enforcement layer that must be kept
+in sync with the app layer, for no additional protection while there
+is exactly one DB user and one request path. **Revisit if:** a second
+DB user/role is introduced, multi-tenancy moves beyond
+one-restaurant-per-user, or an app-level scoping escape is ever found
+in production. If adopted later: one Alembic migration enabling RLS +
+`FORCE RLS` per tenant table, `current_setting('app.restaurant_id')`
+set per session in `get_db` from the authenticated user/guest context,
+`restaurant_id` added to the 6 child tables, and a superuser/bypass
+role for seed, migrations, and fixtures.
 
 ## 10. Testing strategy
 
+> **Stage 9 status (25 Nov 2026):** the pyramid below is built and
+> green — backend pytest 377 passed / 1 skipped, frontend Vitest 128
+> passed, E2E `verify_stage9_e2e.py` 81/81 checks, load sanity 50/50
+> placements with 0 errors. CI (`.github/workflows/ci.yml`) runs all
+> three jobs on every push/PR: backend (pytest + `pip-audit`), frontend
+> (Vitest + `npm audit` + build), e2e (Playwright script against the
+> local stack). GitHub Actions runs are NOT executed from the sandbox —
+> they run on push after Shivam pushes; the YAML is validated by parse
+> and the jobs mirror the locally-verified commands.
+
 | Level | Tool | What it proves |
 |---|---|---|
-| Unit | Pytest | Pricing (incl. splits/remainder), status-machine transitions, idempotency, token hashing, permission helpers. Money tests use integer paise and boundary cases (₹0, ₹1, odd-paise splits). |
-| API / integration | Pytest + FastAPI `TestClient` + test Postgres | Full golden path (§ 5 of `project-overview.md`) against a real DB: order → kitchen → ready → bill → cash → receipt. Cross-tenant and cross-table access denied. Duplicate order with same idempotency key returns one order. |
-| Frontend unit | Vitest + Testing Library | Cart maths (display only), status badges, split calculator, guards. |
-| E2E | Playwright | Guest scan → order → track; waiter floor → help call → cash confirm; KDS ticket flow; owner dashboard loads with seeded data. Run against Docker Compose. |
+| Unit | Pytest | Pricing (incl. splits/remainder), status-machine transitions, idempotency, token hashing, permission helpers. Money tests use integer paise and boundary cases (₹0, ₹1, odd-paise splits). Stage 9: `tests/test_pricing_tax.py`, `test_splits_property.py` (200 seeded cases), `test_state_machines.py` (every legal + illegal transition). |
+| API / integration | Pytest + FastAPI `TestClient` + test Postgres | Full golden path (§ 5 of `project-overview.md`) against a real DB: order → kitchen → ready → bill → cash → receipt. Cross-tenant and cross-table access denied. Duplicate order with same idempotency key returns one order. Stage 9: `tests/test_golden_path_pg.py`, `test_contracts.py` (wire shapes field-for-field), `test_rbac_matrix.py`, `test_jwt_security.py`, `test_qr_tokens.py`, `test_input_validation.py`, `test_audit_coverage.py`, `test_no_client_price.py`, `test_security_headers_cors.py`, `test_rate_limits_security.py`. Postgres tests run via pgserver (bundled binaries, `tests/pg_support.py`, data under `~/.pg-tmp`). |
+| Frontend unit | Vitest + Testing Library | Cart maths (display only), status badges, split calculator, guards. Stage 9: `src/shared/utils/money.test.ts`, `features/guest/hooks/useGuestSocket.test.tsx` (reconnect/backoff/stop-after-3/no-false-paid), `features/staff/components/TableDetail.test.tsx`. |
+| E2E | Playwright | Guest scan → order → track; waiter floor → help call → cash confirm; KDS ticket flow; owner dashboard loads with seeded data. Run against Docker Compose. Stage 9: `backend/scripts/verify_stage9_e2e.py` (81 checks) runs the same flows against the LOCAL stack (pgserver + uvicorn + Vite) — Compose was not available in the sandbox, so the Compose entrypoint (`backend/scripts/run_e2e_compose.sh`, `--external` mode) is written but UNPROVEN; it is a Stage 10 run, not a Stage 9 claim. |
 | Manual / demo | Zaika seed data | Two-device check: guest phone + KDS screen in the same room, one order, watch it appear without refresh. |
 
 **Definition of done for a stage** (applies to every stage in the roadmap):
@@ -699,9 +794,10 @@ tavessa/
 │   │   │       ├── admin.py
 │   │   │       └── websocket.py
 │   │   ├── realtime/
-│   │   │   ├── manager.py       # ConnectionManager (in-process v1)
-│   │   │   ├── bus.py           # EventBus interface (+ Redis adapter later)
-│   │   │   └── events.py        # event names + envelope builder
+│   │   │   ├── manager.py       # ConnectionManager (in-process v1) — the
+│   │   │   │                    # bus. No EventBus interface (Stage 8
+│   │   │   │                    # decision); a Redis broker, if ever needed,
+│   │   │   │                    # goes behind this manager's API (§ 6.3).
 │   │   └── seed/
 │   │       └── zaika.py         # demo seed: Zaika, tables, stations, menu, users
 │   └── tests/
@@ -778,10 +874,87 @@ tavessa/
 | R6 | KDS screen offline / browser crash mid-service | Kitchen misses orders | KDS re-fetches the active queue on load/reconnect; orders are never "only in the socket". A printed-ticket fallback is a Stage 4 decision, not a v1 assumption. |
 | R7 | Concurrent status updates (two cooks, same item) | Lost update, wrong status | Status transitions validated against the current DB state in a transaction; illegal transitions return `409`. Optimistic locking (`version` column) on orders/tickets where contention is expected. |
 | R8 | Money rounding (splits, tax, change) | Paise lost/gained; bills that do not sum | Integer paise everywhere; split remainder rule documented; rounding rule decided in D1 before Stage 6; property-style tests for splits. |
-| R9 | Single-instance realtime breaks when scaled | Events lost across replicas | `EventBus` interface from Stage 8, Redis adapter behind it; no service code changes when the broker changes. |
+| R9 | Single-instance realtime breaks when scaled | Events lost across replicas | **Corrected Stage 9:** the earlier text claimed an "`EventBus` interface from Stage 8" — that is FALSE. Stage 8 deliberately did NOT add an EventBus interface; the `ConnectionManager` already IS the bus, and the Redis trigger is a second `api` replica (§ 6.3). When Redis becomes needed, the broker is added behind the manager's existing `broadcast` / `broadcast_guest` / `connect` / `disconnect` API, not behind a new interface. Until then the single-process limitation is documented and no cross-process delivery is claimed. |
 | R10 | QR code photographed / shared | Strangers order on Table 5's tab | Revocable tokens, session expiry (D5), rotation by owner; no payment can be completed by a guest anyway, so the blast radius is a bogus order — which staff can cancel and which is auditable. |
 | R11 | Scope creep — online payments, delivery, reservations | v1 never ships | Cash-only rule + non-goals list in `project-overview.md`; any addition needs a recorded decision and a roadmap change. |
 | R12 | Menu price change rewrites history | Old bills change value | Price snapshots in `order_items`/`bill_items`; price changes only affect new orders. |
+
+### Stage 9 evidence per risk (25 Nov 2026)
+
+Every row above now names its evidence — a test, a manual check, or a
+recorded decision. No row is "mitigation designed, never verified".
+
+- **R1 — duplicate orders:** test. Same-key replay, different-body 422,
+  and 8-way concurrent same-key → exactly 1 order
+  (`test_orders.py`, `test_orders_concurrency.py`); same for payments
+  and refunds (`test_billing_concurrency.py`,
+  `test_admin_concurrency.py`).
+- **R2 — frontend prices trusted:** test. Guest order schemas carry no
+  price/total/amount field (`extra='forbid'`); tampered payloads → 422
+  and server totals recomputed from menu prices
+  (`test_no_client_price.py`, `test_input_validation.py`).
+- **R3 — bill paid without cash:** test. Only staff `POST /payments`
+  creates a paid state; 8-way concurrent same-key → exactly one
+  payment, different-key → never overpaid
+  (`test_billing_concurrency.py`); double-confirmation race covered in
+  `test_reliability_concurrency_pg.py`; audit row per payment
+  (`test_audit_coverage.py`).
+- **R4 — WebSocket as source of truth:** test. DB-first,
+  broadcast-after-commit; reconnect re-fetches via REST; `version` gap
+  → re-fetch; no event on rollback or idempotent replay
+  (`test_guest_realtime.py`, `test_reliability_stage9.py` KDS/guest
+  reconnect tests, E2E §6b).
+- **R5 — cross-table / cross-restaurant leak:** test. Role × endpoint
+  matrix, cross-restaurant 403/404 as designed, cross-table 404,
+  guest token on staff/kitchen/admin → 401
+  (`test_rbac_matrix.py`, `test_qr_tokens.py`).
+- **R6 — KDS offline mid-service:** test. Socket killed mid-service,
+  reconnect → queue re-fetched from REST, no order lost, none shown
+  twice (`test_reliability_stage9.py`, E2E §6b).
+- **R7 — concurrent status updates:** test. Two cooks / two staff
+  serving / concurrent help-call acknowledge / concurrent void — exactly
+  one wins, the rest 409, final state legal
+  (`test_kitchen_concurrency.py`, `test_staff_concurrency.py`,
+  `test_reliability_concurrency_pg.py`). Note: the "optimistic locking
+  (`version` column)" in the original mitigation was never built —
+  contention is serialised by row locks + status checks in a
+  transaction instead; the `version` column is a bill/order counter,
+  not an optimistic-lock token. Recorded here, not claimed.
+- **R8 — money rounding:** test. Integer paise everywhere; property
+  test over 200 seeded totals × parts (sums exact, remainder rule);
+  tax inclusive/exclusive + freeze snapshot tests
+  (`test_splits_property.py`, `test_pricing_tax.py`,
+  `test_split_reconciliation.py`).
+- **R9 — single-instance realtime:** recorded decision (see the R9 row
+  above). No cross-process delivery is claimed; the Redis trigger
+  (second `api` replica) is unchanged.
+- **R10 — QR photographed/shared:** recorded decision + partial test.
+  Revocable tokens, session expiry (D5, 30-day demo expiry), rotation
+  by owner; token revoke/expire paths tested (`test_qr_tokens.py`).
+  QR rotation itself is still deferred (not built in Stages 7/8/9) —
+  the blast radius is a bogus order (no guest payment path exists),
+  which staff can cancel and which is auditable.
+- **R11 — scope creep:** recorded decision. Cash-only rule +
+  non-goals in `project-overview.md`; no online payment, delivery, or
+  reservation code exists in the repo (grep, Stage 9).
+- **R12 — price change rewrites history:** test. Menu price change
+  after ordering cannot change a bill; old bills keep snapshots
+  (`test_pricing_tax.py`, `test_billing.py`).
+
+### E2E against Docker Compose (unproven)
+
+`backend/scripts/run_e2e_compose.sh` boots the Compose stack (services
+`api`, `web`, `db`), waits for the API health endpoint, bootstraps the
+owner account and seeds Zaika inside the `api` container, then runs
+`backend/scripts/verify_stage9_e2e.py --external` with `E2E_API_BASE` /
+`E2E_WEB_BASE` / `E2E_SEED_JSON` pointed at the Compose services. It
+leaves the stack running for inspection; stop it with
+`docker compose down`. This path was **not executed in the Stage 9
+sandbox (no Docker there) and is unproven** — it assumes a Stage 10
+`docker-compose.yml` (api on 8000, web as Vite dev on 5173 with a
+proxy, db Postgres) and Playwright/Chromium on the host. The same
+flows are verified against the local stack by `verify_stage9_e2e.py`
+(81 checks, all passing).
 
 ## 13. Decisions recorded in this document
 
@@ -790,8 +963,11 @@ tavessa/
   not an Nx/Turborepo monorepo. (Rationale § 4.1.)
 - **D-ARCH-3:** Native FastAPI WebSockets, DB-first broadcast, event envelope
   with summary + `version`. (Rationale § 6.)
-- **D-ARCH-4:** Redis deferred; in-process broadcast in v1 behind an
-  `EventBus` interface. Triggers for adding Redis are listed in § 6.3.
+- **D-ARCH-4:** Redis deferred; in-process broadcast in v1 behind the
+  `ConnectionManager`'s existing API. **Corrected Stage 9:** the
+  original text said "behind an `EventBus` interface" — no such
+  interface exists and Stage 8 deliberately did not add one. Triggers
+  for adding Redis are listed in § 6.3.
 - **D-ARCH-5:** No background worker in v1; no Celery/RQ. (Rationale § 7.)
 - **D-ARCH-6:** Password hashing Argon2id preferred, bcrypt-12 fallback —
   final choice recorded in Stage 1.
@@ -800,3 +976,23 @@ tavessa/
 - **D-ARCH-8:** Money as integer paise (`BIGINT`) everywhere.
 - **D-ARCH-9:** UUID primary keys for business tables.
 - **D-ARCH-10:** No schema change without an Alembic migration.
+- **D-ARCH-11 (Stage 9):** No PostgreSQL Row-Level Security for v1.
+  App-level `restaurant_id` scoping is the tenancy mechanism (§ 5),
+  covered by negative tests on every surface; one shared pool user
+  means RLS would need per-session `SET LOCAL` plumbing, policies on
+  17 columns across 14 tables plus 6 parent-scoped child tables, and
+  seed/bootstrap/test changes — a second enforcement layer to keep in
+  sync, for no added protection at one DB user. Revisit if a second DB
+  role appears, multi-tenancy moves beyond one-restaurant-per-user, or
+  an app-level scoping escape is found. (Evidence in § 9, "RLS
+  decision".)
+- **D-ARCH-12 (Stage 9):** Security headers are set by the app
+  (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`,
+  `Cache-Control: no-store` on `/api/*`); no CSP (Vite inline assets)
+  and no HSTS in the app (no TLS termination in dev) — HSTS is a
+  Stage 10 reverse-proxy decision.
+- **D-ARCH-13 (Stage 9):** Frontend types stay hand-written in v1,
+  pinned field-for-field by backend contract tests
+  (`tests/test_contracts.py`); OpenAPI generation
+  (`openapi-typescript`, checked-in file + CI drift check) is deferred
+  to Stage 10.

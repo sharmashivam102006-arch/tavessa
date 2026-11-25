@@ -995,40 +995,217 @@ refresh anywhere. ✅ — verified live (`verify_stage8_e2e.py`,
 
 ---
 
-## Stage 9 — Testing, security, and reliability
+## Stage 9 — Testing, security, and reliability ✅ COMPLETE (25 Nov 2026)
 
 **Goal:** prove the system is correct and safe under the failure modes in
 `architecture.md` § 12, and fix what the tests find.
 
 **Work:**
 
-- [ ] Full test pyramid (§ 10 of `architecture.md`): unit (pricing, splits,
+- [x] Full test pyramid (§ 10 of `architecture.md`): unit (pricing, splits,
   machines, idempotency), API/integration (golden path on test Postgres),
   frontend unit (Vitest), E2E (Playwright against Docker Compose — guest,
-  waiter, KDS, owner flows).
-- [ ] Security pass: re-run the § 9 checklist in `architecture.md`
+  waiter, KDS, owner flows). **Note:** the E2E runs against the LOCAL stack
+  (pgserver + uvicorn + Vite); the Compose entrypoint exists but is
+  UNPROVEN — see the report below.
+- [x] Security pass: re-run the § 9 checklist in `architecture.md`
   (hashing, JWT rotation/revocation, QR tokens, RBAC + tenant negative
   tests, input validation, CORS, rate limits, headers, audit coverage,
-  secret scan, dependency scan). Consider PostgreSQL RLS as defence-in-depth
-  — decide yes/no and record it.
-- [ ] Reliability pass: duplicate-submission, concurrent status updates
+  secret scan, dependency scan). PostgreSQL RLS decided: **NO for v1**
+  (recorded in `architecture.md` § 9 with evidence + revisit conditions).
+- [x] Reliability pass: duplicate-submission, concurrent status updates
   (two cooks, same item), double payment confirmation, KDS offline/reconnect,
   session expiry, bill-after-more-orders, cancelled-item-after-bill.
   Each failure mode gets a test or a documented manual check.
-- [ ] Load sanity: a realistic service (e.g. 10 concurrent tables ordering)
+- [x] Load sanity: a realistic service (e.g. 10 concurrent tables ordering)
   against the Compose stack; record what breaks first (it will be
   informative, not a pass/fail gate for v1, unless it breaks the golden path).
-- [ ] Fix what is found. Do not defer a money-correctness bug to "later".
+  **Note:** run against the LOCAL stack, not Compose (no Docker in the
+  sandbox) — see the report below.
+- [x] Fix what is found. Do not defer a money-correctness bug to "later".
 
 **Acceptance criteria:**
 
-- [ ] `pytest` (backend) + Vitest + Playwright all pass in CI on a clean checkout.
-- [ ] Every risk R1–R12 in `architecture.md` § 12 has a test, a manual check,
-  or a recorded decision explaining why it does not apply.
-- [ ] No endpoint accepts a client-supplied price (grep + test).
-- [ ] No secret in git history (scan); no `TODO` claims a feature complete.
+- [x] `pytest` (backend) + Vitest + Playwright all pass in CI on a clean checkout.
+  — Backend 377 passed / 1 skipped, Vitest 128 passed, E2E 81/81, all
+  verified locally (see report). CI jobs added (backend + frontend +
+  e2e); **GitHub Actions runs are NOT executed from the sandbox** — they
+  run on push after Shivam pushes. The YAML is validated by parse and
+  the jobs mirror the locally-verified commands. A clean-checkout
+  verification (fresh worktree, install from scratch) was run locally
+  and passed — see the report.
+- [x] Every risk R1–R12 in `architecture.md` § 12 has a test, a manual check,
+  or a recorded decision explaining why it does not apply. — Evidence per
+  risk is listed in `architecture.md` § 12, "Stage 9 evidence per risk".
+- [x] No endpoint accepts a client-supplied price (grep + test). —
+  `tests/test_no_client_price.py` + `test_input_validation.py`; the only
+  legitimate exception is admin-set menu prices (owner/manager only).
+- [x] No secret in git history (scan); no `TODO` claims a feature complete. —
+  gitleaks 8.28.0 + trufflehog + `git log -p` greps over all 13 commits:
+  no private keys, no real SECRET_KEY values, no Render/LiveKit tokens,
+  `.env` never tracked. **Open item for Shivam:** 4 throwaway demo
+  passwords in the Stage 7/8 verification scripts (see report §8) —
+  left in place deliberately; no history rewrite without his call.
+  Both real TODOs (OpenAPI type generation) ruled: generation deferred
+  to Stage 10, wire shapes pinned by contract tests.
 
 **Exit gate:** the team is willing to run a real service on this build.
+— Met with the limitations listed in the report (single-process WS,
+Docker Compose unproven, admin endpoints un-rate-limited, revoked-family
+access tokens live up to 15 min, full-page reload drops staff/owner
+sessions). The gate is a judgement call for Shivam, not an automatic
+pass.
+
+**Stage 9 report (25 Nov 2026):**
+
+1. **Commit:** Stage 9 commit — see `git log --oneline -1` / the Stage 9
+   completion report (the hash is recorded there, not here, so the
+   roadmap file itself stays committable in the same commit).
+   Files: 8 production files modified (`backend/app/main.py` — security
+   headers + CORS credentials strip; `billing_service.py` — equal-split
+   parts cap; `order_service.py` — cancel blocked on frozen/paid bills;
+   `admin_service.py` — row lock on void; frontend `TableDetail.tsx`,
+   `StaffPage.tsx`, `types.ts`, `useGuestSocket.test.tsx`), 17 new test
+   files, 4 new scripts, 15 E2E screenshots, CI + requirements + docs.
+2. **Bugs found and FIXED (each with a regression test):**
+   - Equal split with total < parts wrote 0p splits → 500 on the DB
+     CHECK (reachable via API, parts unbounded). `create_splits`
+     rejects `parts > total_paise` (422); freeze raises 409
+     `split_reconciliation_required` when `remaining < n`.
+   - Concurrent void lost update: 8 simultaneous voids all returned
+     200 (no row lock). `void_bill` now locks the bill row before the
+     status check.
+   - Guest cancel on a frozen/paid bill: the guest could cancel an
+     order already on a `payment_requested`/paid bill and still be
+     charged. Cancel now 409s with the bill id/number/status; voided
+     bills still allow cancel.
+   - Staff `TableDetail` always showed "No active session": it read a
+     `session` field the backend never sends. Fixed to use
+     `table.sessionId`/`sessionOpenedAt`; the phantom field removed
+     from the type and the staff demo path.
+3. **Test pyramid (verified by the parent, re-run independently):**
+   backend pytest **377 passed / 1 skipped** (was 189); frontend Vitest
+   **128 passed / 16 files** (was 116); E2E `verify_stage9_e2e.py`
+   **81/81 checks** (21-step golden path + KDS reconnect + session-expiry
+   UI + owner flows); load sanity 50/50 placements, 0 errors (see §7).
+   New: unit pricing/tax (26), splits property (5, 200 seeded cases),
+   state machines (32), contracts (10), golden path on Postgres (1),
+   reliability (12 + 3 Postgres concurrency), security/RBAC/JWT/QR/
+   validation/audit/rate-limit/no-price/headers/CORS (99).
+4. **Security pass:** per-item evidence in `architecture.md` § 9.
+   Fixes: CORS credentials header stripped for unlisted origins;
+   security-headers middleware added (no CSP — Vite inline assets; no
+   HSTS — Stage 10 reverse proxy). Admin endpoints have no rate limiter
+   (recorded, not changed). `pip-audit`: 3 findings in 2 packages, both
+   accepted with reasons (python-jose PYSEC-2026-4298, no fix, not
+   exploitable — algorithms restricted + server-side key; ecdsa
+   PYSEC-2026-1325, no fix planned, no ECDSA signing in the app).
+   `npm audit --audit-level=high`: 0 vulnerabilities. CI runs both
+   scans, failing on any new finding.
+5. **RLS decision: NO for v1** (`architecture.md` § 9). App-level
+   scoping + negative tests is the mechanism; one shared pool user, no
+   per-request role; migration would touch 17 columns / 14 tables + 6
+   parent-scoped children + seed/bootstrap/tests. Revisit if a second DB
+   role appears, multi-tenancy moves beyond one-restaurant-per-user, or
+   a scoping escape is found.
+6. **Reliability:** every failure mode has a test — duplicate submission
+   (pre-existing idempotency coverage, cited, not duplicated), two-cooks
+   / two-serve / concurrent ack / concurrent void / concurrent freeze
+   (exactly one wins, rest 409), double payment (pre-existing), KDS +
+   guest reconnect (no loss/duplicates), session expiry (410 + UI
+   message, no loop), bill-after-more-orders (new bill, old frozen bill
+   byte-identical), cancel-after-bill (409 on frozen/paid, regeneration
+   on unpaid issued, totals never negative, paid bills unchanged).
+   **Recorded, not fixed:** a full-page reload drops staff/owner
+   sessions (access token is memory-only by Stage 7 design, no boot-time
+   session restore) — fixing it means a boot-time refresh attempt or
+   accepting re-login on reload; a Stage 7 auth-posture decision for
+   Shivam.
+7. **Load sanity** (`backend/scripts/load_sanity.py`, local stack,
+   API-level, 10 tables × 5 orders): parent re-run — 50 placements in
+   1.8s wall (27.7 req/s), 50× 201, 0× 5xx, 0× 409, 0 transport errors;
+   latency p50=356ms, p95=395ms, max=399ms; golden path after load OK.
+   **What broke first: nothing.** (The workstream's earlier run on the
+   same script measured p50≈1394ms under parallel-work contention; the
+   number is sandbox-CPU-sensitive, not a product regression.)
+8. **Secret scan:** gitleaks 8.28.0 (`gitleaks git`, 12 commits — the
+   13th, Shivam's README commit, contains no code) + trufflehog 2.2.1
+   + `git log -p` greps. Clean except 4 demo-password instances, all
+   throwaway local demo accounts in verification scripts:
+   `backend/scripts/verify_stage7_live.py:45,47`
+   (`OwnerPass123`/`WaiterPass123`, commit `c21a4bb`),
+   `backend/scripts/screenshots_stage7.py:45` (`OwnerPass123`, `c21a4bb`),
+   `backend/scripts/verify_stage8_e2e.py:74-78`
+   (`OwnerPass123`/`WaiterPass123`/`KitchenPass123`, commit `3ddd48d`).
+   Blast radius: local-demo only — the Zaika seed creates no users with
+   these passwords and no deployment uses them. **Decision for Shivam:**
+   (a) leave as documented demo creds, (b) move them to env vars in the
+   scripts (history still contains them — only stops future occurrences),
+   or (c) add a gitleaks allowlist entry. No history rewrite was done.
+9. **No client-supplied price:** grep + `test_no_client_price.py`
+   (6 tests) + `test_input_validation.py` (9 tests). Guest order schemas
+   have no price/total/amount field and forbid extras; splits are an
+   allocation of a server total; payments/refunds validate against
+   server-side outstanding/refundable amounts. Admin-set menu prices are
+   the only legitimate exception (owner/manager only, and old bills keep
+   snapshots).
+10. **TODO audit:** both TODOs ruled — OpenAPI type generation NOT
+    implemented (826-line types file, not small/safe to swap); wire
+    shapes pinned field-for-field by `test_contracts.py`; generation
+    deferred to Stage 10 (checked-in file + CI drift check).
+    `types.ts:5` reworded to a decision; `api-plan.md` § 12 reworded to
+    match. No TODO claims a feature complete.
+11. **CI:** `.github/workflows/ci.yml` now has three jobs — backend
+    (pytest + pip-audit with the two accepted IDs ignored), frontend
+    (Vitest + npm audit + build), e2e (Playwright
+    `verify_stage9_e2e.py` against the local stack, screenshots uploaded
+    on failure). No Postgres service container: the suite's Postgres
+    tests use pgserver (bundled binaries). **Honest limit:** Actions
+    runs are not executed from this sandbox; the YAML is validated by
+    parse, action versions are current majors (checkout@v4,
+    setup-python@v5, setup-node@v4, upload-artifact@v4), and the jobs
+    mirror the locally-verified commands. CI runs on push after Shivam
+    pushes. Clean-checkout gaps found and FIXED in this stage:
+    `pgserver` and `playwright` were installed in the sandbox venv but
+    missing from `backend/requirements.txt` — both added, so a fresh
+    install now contains everything the suite and the E2E script need.
+12. **E2E + clean checkout:** E2E 81/81 (parent re-run, exit 0), 15
+    screenshots in `docs/stage9-screenshots/` (11 Stage 8 flows +
+    owner overview, owner tax, owner menu price, guest session-expired).
+    Compose entrypoint `scripts/run_e2e_compose.sh` written but NOT
+    executed (no Docker in sandbox) — unproven, assumes a Stage 10
+    Compose file. Clean checkout (parent verification): fresh tree copy
+    at the Stage 9 work state, fresh venv (`pip install -r
+    requirements.txt` — including the newly-added `pgserver` +
+    `playwright`) + `npm ci` from scratch, then full backend suite ×2,
+    Vitest, build, E2E — Vitest **128 passed / 16 files**, build clean,
+    E2E **81 checks passed**, and a third backend run in the same clean
+    copy gave the verified **377 passed / 1 skipped** (the first two
+    runs' per-run counts were not captured — the script piped pytest
+    through `tail -2` and the pgserver shutdown noise swallowed the
+    summary lines; the runs completed and the script exited 0). The
+    clean copy was removed afterwards
+    (`~/workspace/tavessa-cleancheck`).
+13. **Remaining limitations + known issues:** single-process WS
+    limitation unchanged; Docker Compose / Dockerfiles still unproven;
+    admin endpoints un-rate-limited; revoked-family access tokens live
+    up to 15 min; full-page reload drops staff/owner sessions (see §6);
+    frontend types have small recorded gaps vs the backend
+    (`Bill` lacks `voidedAt`/`voidReason`; `Receipt` lacks tax snapshot
+    fields; `StaffHelpCallListResponse` lacks `pagination` — listed in
+    `test_contracts.py`, not silently fixed); splits show stale amounts
+    between a tax change and the freeze (Stage 8 carry-over); the
+    kitchen event is `order.status_changed` (Stage 4 name was
+    aspirational); `update_user` always writes `user.role_changed` even
+    for flag-only changes (pinned by test).
+14. **Decisions recorded:** R9 record corrected (no EventBus interface —
+    the earlier text was false); R7 optimistic-locking note corrected
+    (row locks, not a `version` token); D-ARCH-11 (no RLS for v1),
+    D-ARCH-12 (security headers, no CSP/HSTS in-app), D-ARCH-13
+    (hand-written frontend types, pinned by contract tests).
+15. **Deferred out of Stage 9:** QR token rotation (R10), review
+    moderation (D6), menu image upload, staff assignments,
+    busiest-hours/by-category analytics, RLS (decided NO for v1).
 
 ---
 

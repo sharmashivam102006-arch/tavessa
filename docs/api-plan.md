@@ -892,10 +892,15 @@ restaurant that their role cannot access returns `403`.
   `GET /docs` (Swagger) and `/openapi.json` are enabled in development and
   staging; in production they are behind owner auth or disabled (Stage 10
   decision — default: disabled in production).
-- Frontend types are generated from `/openapi.json` (`openapi-typescript`)
-  in Stage 1. If generation is not wired up yet, hand-written types must
-  match the Pydantic schemas field-for-field and are marked `// TODO: generate
-  from OpenAPI` — they are not a permanent alternative.
+- Frontend types are hand-written in `frontend/src/shared/api/types.ts`
+  (Stage 9 decision — `openapi-typescript` generation was evaluated and
+  deferred to Stage 10: the types file is 826 lines across four interfaces
+  and swapping it under every consumer is not small/safe; generation, when
+  it lands, is a checked-in generated file plus a CI drift check). The
+  hand-written types are pinned field-for-field by backend contract tests
+  (`backend/tests/test_contracts.py`, Stage 9); a response field the
+  frontend types lack is a recorded gap, not a silent drift — see the
+  module docstring there for the current list.
 - Every endpoint in this document must appear in OpenAPI with its auth,
   request, and response schemas. An endpoint without a schema is not done.
 

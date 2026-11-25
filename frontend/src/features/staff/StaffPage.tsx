@@ -84,16 +84,6 @@ function demoTableDetail(tableId: string): StaffTableDetail | undefined {
   if (!table) return undefined;
   return {
     table,
-    session: table.sessionId
-      ? {
-          id: table.sessionId,
-          restaurantId: "demo",
-          tableId: table.id,
-          tableNumber: table.number,
-          status: "active",
-          openedAt: table.sessionOpenedAt ?? new Date().toISOString(),
-        }
-      : null,
     orders: DEMO_ORDERS.filter((o) => o.tableSessionId === table.sessionId),
     helpCalls: DEMO_HELP_CALLS.filter(
       (c) => c.tableSessionId === table.sessionId,

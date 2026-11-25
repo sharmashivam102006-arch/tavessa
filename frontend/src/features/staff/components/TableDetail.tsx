@@ -1,10 +1,15 @@
 /** Selected-table detail (Stages 5–6).
  *
- * Session info (opened at, session id), the table's orders with
- * their serve actions, its open/acknowledged help calls, and its
- * open bill summary if one exists (Stage 6). Data comes from
- * GET /staff/tables/:id via REST; the panel closes with the ×
- * button (the selection lives in StaffPage).
+ * Session info comes from the table row itself
+ * (table.sessionId / table.sessionOpenedAt — GET
+ * /staff/tables/:id does NOT send a separate `session` object;
+ * Stage 9 fixed this panel reading a field the backend never
+ * sent, which made every occupied table read "No active
+ * session"). The table's orders with their serve actions, its
+ * open/acknowledged help calls, and its open bill summary if one
+ * exists (Stage 6). Data comes from GET /staff/tables/:id via
+ * REST; the panel closes with the × button (the selection lives
+ * in StaffPage).
  */
 import { X } from "lucide-react";
 
@@ -31,7 +36,8 @@ export function TableDetail({
   onClose: () => void;
   demo?: boolean;
 }) {
-  const { table, session, orders, helpCalls, openBill } = detail;
+  const { table, orders, helpCalls, openBill } = detail;
+  const sessionOpen = table.sessionId !== null && table.sessionOpenedAt !== null;
   return (
     <section
       className="mt-4 rounded-xl border border-brand-700 bg-white p-4 shadow-sm"
@@ -41,8 +47,8 @@ export function TableDetail({
         <div>
           <h2 className="text-xl font-bold">Table {table.number}</h2>
           <p className="mt-0.5 text-sm text-stone-600">
-            {session
-              ? `Session open since ${formatOpenedAt(session.openedAt)} · ${table.activeOrderCount} active order${table.activeOrderCount === 1 ? "" : "s"}`
+            {sessionOpen
+              ? `Session open since ${formatOpenedAt(table.sessionOpenedAt as string)} · ${table.activeOrderCount} active order${table.activeOrderCount === 1 ? "" : "s"}`
               : "No active session — the table is free."}
           </p>
           {openBill ? (

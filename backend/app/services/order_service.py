@@ -43,6 +43,8 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import ApiError
 from app.models import (
+    Bill,
+    BillItem,
     DiningTable,
     IdempotencyKey,
     ItemAddon,
@@ -562,7 +564,18 @@ def cancel_order(
 ) -> OrderDataResponse:
     """Guest cancel: only while the order is still 'placed' (D8 still
     open — recorded in api-plan.md). Cancels the order and its items
-    in the same transaction."""
+    in the same transaction.
+
+    Stage 9: also blocked once the order is on a FROZEN bill
+    (payment_requested / paid / refunded) or on an issued bill
+    that already has cash against it. A frozen bill never changes
+    (Stage 6 rule), so letting the guest cancel would leave them
+    paying for food they cancelled — the only honest outcomes are
+    staff void (unpaid) or refund (paid). The 409 names the bill
+    so staff can find it. Cancelling while the bill is still an
+    unpaid ``issued`` bill is fine: the bill regenerates without
+    the cancelled items (Stage 6 decision 8).
+    """
     order = db.get(Order, order_id)
     if order is None or order.table_session_id != ctx.session.id:
         raise ApiError(404, "not_found", "Order not found.")
@@ -572,6 +585,42 @@ def cancel_order(
             "conflict",
             f"Only a placed order can be cancelled (current status: {order.status}).",
             {"status": order.status},
+        )
+    frozen_bill = (
+        db.execute(
+            select(Bill)
+            .join(BillItem, BillItem.bill_id == Bill.id)
+            .where(
+                BillItem.order_id == order.id,
+                Bill.table_session_id == ctx.session.id,
+                (
+                    Bill.status.in_((
+                        "payment_requested", "paid",
+                        "partially_refunded", "refunded",
+                    ))
+                    | (
+                        (Bill.status == "issued")
+                        & (Bill.amount_paid_paise > 0)
+                    )
+                ),
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if frozen_bill is not None:
+        raise ApiError(
+            409,
+            "conflict",
+            "This order is already on a bill that has been requested "
+            "or paid, so it can no longer be cancelled from the app — "
+            "please ask a member of staff (they can void or refund it).",
+            {
+                "status": order.status,
+                "bill_id": str(frozen_bill.id),
+                "bill_number": frozen_bill.bill_number,
+                "bill_status": frozen_bill.status,
+            },
         )
     order.status = "cancelled"
     order.cancelled_at = _now()

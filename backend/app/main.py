@@ -38,6 +38,36 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Security headers (Stage 9). No Content-Security-Policy is set
+    # here on purpose: the Vite frontend serves inline assets that a
+    # CSP would break, and a CSP for the API alone buys nothing — the
+    # API serves JSON, not HTML. HSTS is likewise NOT set here: there
+    # is no TLS termination in the sandbox/dev setup, so HSTS would
+    # be a lie; it is a Stage 10 deployment decision (reverse proxy).
+    @app.middleware("http")
+    async def _security_headers(request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        # No flow in this app depends on the Referer header (auth is
+        # Bearer/cookie + token based), so no-referrer is safe.
+        response.headers["Referrer-Policy"] = "no-referrer"
+        # API responses carry live business state — never cacheable.
+        # Static frontend assets are served elsewhere and untouched.
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        # Starlette's CORSMiddleware sends
+        # Access-Control-Allow-Credentials: true even when the Origin
+        # is NOT on the allowlist (it sets it whenever
+        # allow_credentials=True). Without an ACAO header a browser
+        # will not expose the response cross-origin anyway, so this
+        # is not exploitable — but a credentials header with no
+        # allowlisted origin is misleading, so strip it unless an
+        # ACAO header was actually set for this origin.
+        if "access-control-allow-origin" not in response.headers:
+            if "access-control-allow-credentials" in response.headers:
+                del response.headers["access-control-allow-credentials"]
+        return response
     register_error_handlers(app)
     app.state.limiter = limiter
 

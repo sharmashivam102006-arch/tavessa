@@ -306,6 +306,85 @@ describe("useGuestSocket", () => {
     expect(instances).toHaveLength(0);
   });
 
+  it("stops after repeated session failures (4404 close)", async () => {
+    renderProbe();
+    await waitFor(() => expect(instances).toHaveLength(1));
+    instances[0].open();
+    await waitFor(() => {
+      expect(screen.getByTestId("connection")).toHaveTextContent("live");
+    });
+    // Three 4404 closes in a row. A successful open resets the
+    // failure counter, so the reconnected sockets are closed
+    // BEFORE they open — the session is gone, every fresh ticket
+    // is refused straight away. After the third, the hook stops.
+    for (let n = 1; n <= 3; n++) {
+      instances[n - 1].closeWith(4404);
+      if (n < 3) {
+        await waitFor(() => expect(instances).toHaveLength(n + 1));
+      }
+    }
+    await waitFor(() => {
+      expect(screen.getByTestId("connection")).toHaveTextContent("session-expired");
+    });
+    expect(mockedFetchTicket.mock.calls.length).toBe(3);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(instances).toHaveLength(3);
+  });
+
+  it("stops after repeated session failures (410 on ticket fetch)", async () => {
+    mockedFetchTicket.mockRejectedValue(
+      new ApiError(410, "session_expired", "session gone"),
+    );
+    renderProbe();
+    await waitFor(() => {
+      expect(screen.getByTestId("connection")).toHaveTextContent("session-expired");
+    });
+    expect(mockedFetchTicket.mock.calls.length).toBe(3);
+    expect(instances).toHaveLength(0);
+  });
+
+  it("repeated network closes never report session-expired", async () => {
+    renderProbe();
+    await waitFor(() => expect(instances).toHaveLength(1));
+    instances[0].open();
+    // Four network drops (1006): each reconnects with a fresh
+    // ticket and the hook keeps trying — a network failure is not
+    // a session failure, so it must never give up.
+    for (let n = 1; n <= 4; n++) {
+      instances[n - 1].closeWith(1006);
+      await waitFor(() => expect(instances).toHaveLength(n + 1));
+      instances[n].open();
+      await waitFor(() => {
+        expect(screen.getByTestId("connection")).toHaveTextContent("live");
+      });
+    }
+    expect(mockedFetchTicket.mock.calls.length).toBe(5);
+    expect(screen.getByTestId("connection")).toHaveTextContent("live");
+  });
+
+  it("a bill.paid event for ANOTHER bill does not flip this bill", async () => {
+    renderProbe();
+    await waitFor(() => expect(instances).toHaveLength(1));
+    instances[0].open();
+    await waitFor(() => {
+      expect(screen.getByTestId("connection")).toHaveTextContent("live");
+    });
+    const billCallsBefore = mockedFetchBill.mock.calls.length;
+    // Another session's bill was paid: the event still triggers a
+    // refetch, but REST says THIS bill is issued — it must stay so.
+    instances[0].receive(
+      guestEvent({
+        type: "bill.paid",
+        version: 2,
+        data: { bill_id: "bill-other-session", receipt_number: "R-9" },
+      }),
+    );
+    await waitFor(() => {
+      expect(mockedFetchBill.mock.calls.length).toBeGreaterThan(billCallsBefore);
+    });
+    expect(screen.getByTestId("bill-status")).toHaveTextContent("issued");
+  });
+
   it("a payment event only flips the bill to paid when REST says so", async () => {
     renderProbe();
     await waitFor(() => expect(instances).toHaveLength(1));

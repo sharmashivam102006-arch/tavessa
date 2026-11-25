@@ -2,9 +2,17 @@
  *
  * Guest/menu/order/bill/help types below are hand-written to match
  * docs/api-plan.md (§§ 3, 4, 5, 7) field-for-field.
- * TODO (Stage 3): generate these from the backend OpenAPI schema
- * (openapi-typescript) and delete the hand-written copies. They are
- * not a permanent alternative to generated types.
+ * DECIDED (Stage 9, security workstream): these stay hand-written
+ * in v1. Generating them from the backend OpenAPI schema
+ * (openapi-typescript) was evaluated and NOT done: types.ts is
+ * 826 lines covering guest + staff + kitchen + admin shapes, the
+ * frontend has no node_modules installed, and swapping the shared
+ * types under every consumer is not a small, safe change. The
+ * wire contract is instead pinned field-for-field by the backend
+ * contract tests (Stage 9 contract workstream); generation is
+ * deferred to Stage 10, when it can land with a checked-in
+ * generated file + a CI drift check. Do not re-add a TODO claiming
+ * generation is imminent — the decision above is the state.
  *
  * Money is integer paise in every type. The frontend never sends a
  * price or total — see OrderPlacementRequest (no price fields). */
@@ -505,13 +513,14 @@ export interface StaffHelpCall extends HelpCall {
   resolvedAt: string | null;
 }
 
-/** Table detail (GET /staff/tables/:id): the grid row, the active
- * session (null when the table is free), that session's orders, its
- * open/acknowledged help calls, and its open bill summary if one
- * exists (Stage 6 — null when there is no open bill). */
+/** Table detail (GET /staff/tables/:id): the grid row, that
+ * session's orders, its open/acknowledged help calls, and its
+ * open bill summary if one exists (Stage 6 — null when there is
+ * no open bill). There is NO separate `session` object on this
+ * response (Stage 9 contract test): the session is
+ * table.sessionId / table.sessionOpenedAt. */
 export interface StaffTableDetail {
   table: StaffTable;
-  session: GuestSession | null;
   orders: KitchenOrder[];
   helpCalls: StaffHelpCall[];
   openBill?: StaffBillSummary | null;

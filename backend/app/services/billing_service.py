@@ -514,6 +514,13 @@ def _reconcile_splits_at_freeze(
     modes = {(s.mode or "custom") for s in unpaid}
     if modes == {"equal"}:
         n = len(unpaid)
+        if remaining < n:
+            # Every part must be at least 1p (the DB CHECK on
+            # bill_splits + the custom-split rule); re-deriving
+            # from a total smaller than the part count would write
+            # 0p splits and 500 on the CHECK. Block the freeze
+            # cleanly instead — the guest updates the splits.
+            raise _reconciliation_error(new_total_paise, paid_sum + unpaid_sum)
         base = remaining // n
         extra = remaining % n
         new_amounts = [base + (1 if i < extra else 0) for i in range(n)]
@@ -807,6 +814,18 @@ def create_splits(
                     "Equal split needs 'parts' (>= 2).", {"field": "parts"},
                 )
             n = request.parts
+            if n > bill.total_paise:
+                # Every part must be at least 1p (the DB CHECK on
+                # bill_splits + the custom-split rule): splitting a
+                # total into more parts than paise would write 0p
+                # splits and 500 on the CHECK. Reject cleanly.
+                raise ApiError(
+                    422, "validation_failed",
+                    "Equal split needs at most one part per paise — "
+                    f"this bill is {bill.total_paise} paise, so it "
+                    f"cannot be split into {n} parts.",
+                    {"field": "parts", "total_paise": bill.total_paise},
+                )
             base = bill.total_paise // n
             remainder = bill.total_paise % n
             amounts = [base + (1 if i < remainder else 0) for i in range(n)]

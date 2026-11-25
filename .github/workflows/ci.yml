@@ -16,7 +16,23 @@ jobs:
         run: |
           cd backend
           pip install -r requirements.txt
+      - name: Dependency audit
+        run: |
+          cd backend
+          pip install pip-audit
+          # Accepted findings, recorded in docs/architecture.md §9
+          # ("Dependency scan", Stage 9):
+          # - PYSEC-2026-4298 (python-jose): no fix released; not
+          #   exploitable here — decode() restricts algorithms to
+          #   HS256 and the key is the server-side SECRET_KEY.
+          # - PYSEC-2026-1325 (ecdsa Minerva timing): no fix planned
+          #   upstream; the app never signs with ECDSA (HS256 only).
+          pip-audit -r requirements.txt --ignore PYSEC-2026-4298 --ignore PYSEC-2026-1325
       - name: Test
+        # The Postgres concurrency/transaction tests use pgserver
+        # (bundled PostgreSQL binaries, installed from
+        # requirements.txt) — no Postgres service container is
+        # needed, and no Postgres test is skipped in CI.
         run: |
           cd backend
           python -m pytest -q
@@ -34,7 +50,55 @@ jobs:
         run: |
           cd frontend
           npm ci
+      - name: Test
+        run: |
+          cd frontend
+          npm test -- --run
+      - name: Dependency audit
+        run: |
+          cd frontend
+          npm audit --audit-level=high
       - name: Typecheck + build
         run: |
           cd frontend
           npm run build
+
+  e2e:
+    # Playwright end-to-end verification against the LOCAL stack
+    # (pgserver + uvicorn + Vite dev server, booted by the script
+    # itself) — the same flows as the Stage 8/9 verification scripts.
+    # The Docker Compose path (scripts/run_e2e_compose.sh) is NOT run
+    # here: it is unproven and needs a Stage 10 Compose file.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install backend
+        run: |
+          cd backend
+          pip install -r requirements.txt
+      - name: Install Playwright browsers
+        run: |
+          python -m playwright install chromium --with-deps
+      - name: Install frontend
+        run: |
+          cd frontend
+          npm ci
+      - name: E2E verification
+        run: |
+          cd backend
+          python scripts/verify_stage9_e2e.py
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage9-screenshots
+          path: docs/stage9-screenshots/
