@@ -5,7 +5,7 @@
  * An account flagged mustChangePassword is forced through the
  * change-password form before it can proceed. */
 import { useState, type FormEvent } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { Navigate, useNavigate, useSearchParams } from "react-router";
 
 import { ApiError } from "@/shared/api/client";
 import {
@@ -23,6 +23,9 @@ export function LoginPage() {
   const setAuth = useAuthStore((s) => s.setAuth);
   const setUser = useAuthStore((s) => s.setUser);
   const sessionExpired = useAuthStore((s) => s.sessionExpired);
+  const status = useAuthStore((s) => s.status);
+  const authedUser = useAuthStore((s) => s.user);
+  const authedToken = useAuthStore((s) => s.accessToken);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -76,6 +79,21 @@ export function LoginPage() {
       setPending(false);
     }
   };
+
+  // Stage 9 closure: a boot-time silent refresh may already have
+  // restored the session before the user reaches this page (e.g.
+  // they reloaded on /login, or navigated here while signed in).
+  // Send them on to their board instead of showing the form again.
+  // Accounts flagged mustChangePassword still see the form: the
+  // change-password flow must not be bypassed by a restore.
+  if (
+    status === "authenticated" &&
+    authedUser &&
+    authedToken &&
+    !authedUser.mustChangePassword
+  ) {
+    return <Navigate to={landingRouteFor(authedUser.role)} replace />;
+  }
 
   return (
     <div className="mx-auto max-w-md rounded-lg border border-stone-200 bg-white p-6">

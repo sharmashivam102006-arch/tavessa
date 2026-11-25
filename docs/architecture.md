@@ -490,8 +490,14 @@ v1.
   15 min, HS256)** + **refresh token (rotating, opaque, HttpOnly
   cookie, 7 days)**. Access tokens are sent as `Authorization:
   Bearer …`; the frontend keeps the access token in memory (Zustand
-  store, not `localStorage` — a full page reload logs the user out,
-  by design). Refresh tokens are stored as SHA-256 hashes only.
+  store, not `localStorage`). A full page reload restores the session
+  via ONE boot-time silent refresh (`bootRefresh` in
+  `frontend/src/shared/api/client.ts`, Stage 9 closure): the app
+  starts in a "loading" auth state, the route guards wait instead of
+  redirecting, and a valid refresh cookie yields a fresh access token
+  without asking the user to sign in again. No cookie, or an
+  expired/revoked cookie, settles on "anonymous" and shows the login
+  page. Refresh tokens are stored as SHA-256 hashes only.
 - JWT claims: `sub` (user id), `restaurant_id`, `branch_id`, `role`,
   `exp`, `jti`. **Every request re-validates the user from the
   database** (`get_current_user` does a DB lookup + `is_active`
@@ -501,6 +507,22 @@ v1.
   revokes the old one; reuse of a revoked token revokes the whole
   token family (theft detection). Logout revokes the presented token;
   change-password revokes ALL of the user's refresh sessions.
+  `POST /api/v1/auth/refresh` is NOT rate-limited (only `/login` is) —
+  recorded, not changed: a refresh without the cookie answers 401,
+  and the frontend attempts it only on boot and on a 401 retry, never
+  in a loop.
+- No CSRF token (Stage 9 closure — a deliberate decision, not an
+  omission). `/refresh` is POST-only (GET returns 405) and the cookie
+  is SameSite=Lax, so a cross-site POST does not carry the cookie at
+  all — a forged refresh arrives cookieless and gets a 401. Even if a
+  browser ever attached it, the attacker could not read the response
+  (no CORS allow-list entry for their origin; the new tokens travel
+  as an HttpOnly cookie + JSON the same-origin policy hides), so the
+  worst case is a rotation the attacker cannot use: the victim's next
+  refresh then fails reuse detection, the whole family is revoked,
+  and the victim is logged out (a nuisance, not a takeover). The
+  reasoning is recorded in `frontend/src/shared/api/client.ts` and
+  `backend/app/auth/router.py`.
 - Login is rate-limited (10/min/IP, slowapi) and returns a generic 401
   for wrong credentials and for deactivated accounts alike. The first
   owner is created only via the bootstrap CLI (`python -m

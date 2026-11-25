@@ -1,9 +1,19 @@
-/** Auth store — Stage 7.
+/** Auth store — Stage 7, boot-time restore added in the Stage 9 closure.
  *
  * The access token lives IN MEMORY (Zustand) only — never
  * localStorage, never sessionStorage. The refresh token is an
  * HttpOnly cookie the browser handles (fetch with
  * credentials: "include"); this store never sees it.
+ *
+ * Boot state (Stage 9 closure): on a fresh page load the app does
+ * not know yet whether a refresh cookie exists, so `status` starts
+ * as "loading" and the app attempts ONE silent refresh
+ * (see `bootRefresh` in @/shared/api/client). While loading, the
+ * route guards wait instead of redirecting to /login, so a reload
+ * keeps a signed-in user signed in. `bootAttempted` records that
+ * the one boot attempt happened — a second attempt (StrictMode
+ * double-invoke, a remount, or a post-logout re-render) must not
+ * fire another refresh call.
  */
 import { create } from "zustand";
 
@@ -22,24 +32,35 @@ export interface AuthUser {
   lastLoginAt: string | null;
 }
 
+/** "loading" — boot restore not settled yet; "authenticated" — an
+ * in-memory access token is held; "anonymous" — no session (no
+ * cookie, expired/revoked cookie, or logged out). */
+export type AuthStatus = "loading" | "authenticated" | "anonymous";
+
 interface AuthState {
   accessToken: string | null;
   user: AuthUser | null;
   sessionExpired: boolean;
+  status: AuthStatus;
+  bootAttempted: boolean;
   setAuth: (accessToken: string, user: AuthUser) => void;
   setUser: (user: AuthUser) => void;
   clearAuth: (sessionExpired?: boolean) => void;
+  markBootAttempted: () => void;
 }
 
 export const useAuthStore = create<AuthState>()((set) => ({
   accessToken: null,
   user: null,
   sessionExpired: false,
+  status: "loading",
+  bootAttempted: false,
   setAuth: (accessToken, user) =>
-    set({ accessToken, user, sessionExpired: false }),
+    set({ accessToken, user, sessionExpired: false, status: "authenticated" }),
   setUser: (user) => set({ user }),
   clearAuth: (sessionExpired = false) =>
-    set({ accessToken: null, user: null, sessionExpired }),
+    set({ accessToken: null, user: null, sessionExpired, status: "anonymous" }),
+  markBootAttempted: () => set({ bootAttempted: true }),
 }));
 
 export function landingRouteFor(role: AuthUser["role"]): string {

@@ -7,6 +7,19 @@
   Secure in production, Path=/api/v1/auth). The access token is
   returned in JSON; the frontend keeps it in memory only, never
   in localStorage.
+- No CSRF token (Stage 9 closure — a deliberate decision, not an
+  omission). ``/refresh`` is POST-only (GET returns 405) and the
+  cookie is SameSite=Lax, so a cross-site POST does not carry the
+  cookie at all — a forged refresh arrives cookieless and gets a
+  401. Even if a browser ever attached it, the attacker could not
+  read the response (no CORS allow-list entry for their origin;
+  the new tokens travel as an HttpOnly cookie + JSON the
+  same-origin policy hides), so the worst case is a rotation the
+  attacker cannot use: the victim's next refresh then fails reuse
+  detection, the whole family is revoked, and the victim is
+  logged out (a nuisance, not a takeover). The frontend also
+  attempts the refresh only on boot and on a 401 retry, never in
+  a loop.
 - ``/ws/tickets`` issues single-use opaque tickets (60s) for the
   kitchen/staff WebSocket channels.
 """

@@ -87,7 +87,7 @@ export function MenuPage() {
     return (
       <ErrorState
         title="This table session has expired"
-        body="Your session ended (decision D5 — session expiry — is still open). Please scan the QR code on your table again to start a new session."
+        body="Your session ended. Please scan the QR code on your table again to start a new session."
         onRetry={() => window.location.reload()}
       />
     );

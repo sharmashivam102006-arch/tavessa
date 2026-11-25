@@ -63,6 +63,12 @@ from scripts/seed_e2e.py, run inside the stack). Section E is
 skipped (the script must not kill the Compose stack's backend)
 and the direct-SQL ticket-expiry sub-check in section C is
 skipped (no DB access from here).
+
+Demo passwords: read from TAVESSA_DEMO_*_PASSWORD env vars when set,
+otherwise generated fresh per run (scripts/demo_passwords.py) — never
+hardcoded. In --external mode the owner password must match the one
+run_e2e_compose.sh used to bootstrap the owner, so the wrapper exports
+TAVESSA_DEMO_OWNER_PASSWORD. See backend/README.md, "Local demo scripts".
 """
 
 from __future__ import annotations
@@ -88,6 +94,9 @@ SHOTS_DIR = REPO_DIR / "docs" / "stage9-screenshots"
 CHROME = Path.home() / ".cache" / "ms-playwright" / "chromium-1255" / "chrome-linux64" / "chrome"
 
 sys.path.insert(0, str(BACKEND_DIR))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from demo_passwords import ENV_KITCHEN, ENV_OWNER, ENV_WAITER, demo_password
 
 import pytest
 
@@ -99,11 +108,11 @@ BASE = os.environ.get("E2E_API_BASE", f"http://127.0.0.1:{PORT}") if EXTERNAL el
 WS_BASE = BASE.replace("http://", "ws://").replace("https://", "wss://")
 VITE = os.environ.get("E2E_WEB_BASE", "http://127.0.0.1:5173") if EXTERNAL else "http://127.0.0.1:5173"
 OWNER_EMAIL = "owner@zaika.example"
-OWNER_PASSWORD = "OwnerPass123"
+OWNER_PASSWORD = demo_password(ENV_OWNER)
 WAITER_EMAIL = "waiter@zaika.example"
-WAITER_PASSWORD = "WaiterPass123"
+WAITER_PASSWORD = demo_password(ENV_WAITER)
 KITCHEN_EMAIL = "kitchen@zaika.example"
-KITCHEN_PASSWORD = "KitchenPass123"
+KITCHEN_PASSWORD = demo_password(ENV_KITCHEN)
 
 CHECKS: list[str] = []
 

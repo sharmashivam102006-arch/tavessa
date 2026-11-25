@@ -13,6 +13,28 @@
  *   silent refresh (POST /api/v1/auth/refresh) and retries once;
  *   if the refresh fails the auth state is cleared and the caller
  *   gets the 401 (route guards redirect to /login).
+ * - Stage 9 closure: `bootRefresh` attempts ONE silent refresh on
+ *   app boot, so a page reload restores the session from the
+ *   refresh cookie instead of dropping the user to /login. It
+ *   shares the single-flight `tryRefresh` below, so concurrent
+ *   callers (StrictMode double-invoke, a boot racing a 401 retry)
+ *   make exactly one network refresh call and one rotation.
+ *
+ * Why the refresh needs no CSRF token (Stage 9 closure — recorded,
+ * not assumed): the refresh credential is the HttpOnly cookie, and
+ * the endpoint is POST-only (a GET returns 405). SameSite=Lax means
+ * a cross-site POST does not carry the cookie at all — only a
+ * same-site POST, or a cross-site top-level GET navigation, would —
+ * so a forged cross-site refresh arrives without the cookie and
+ * gets a 401. Even if a browser ever did attach the cookie to a
+ * forged call, the attacker could not read the response (no CORS
+ * allow-list entry for their origin, and the new tokens travel as
+ * an HttpOnly cookie + a JSON body the same-origin policy hides),
+ * so the worst case is a rotation the attacker cannot use — the
+ * victim's next refresh then fails reuse detection, the whole
+ * family is revoked server-side, and the victim is logged out
+ * (a nuisance, not a takeover). The access token itself is never
+ * stored where script or another origin could read it.
  */
 import type { ApiErrorBody } from "./types";
 import { useAuthStore, type AuthUser } from "@/shared/stores/authStore";
@@ -64,6 +86,41 @@ async function tryRefresh(): Promise<boolean> {
     }
   })();
   return refreshInFlight;
+}
+
+/** Boot-time silent refresh (Stage 9 closure).
+ *
+ * Attempts exactly ONE refresh per page load, via the single-flight
+ * `tryRefresh` above. The `bootAttempted` flag in the auth store is
+ * set synchronously before awaiting, so concurrent callers (StrictMode
+ * double-invoke, a boot racing a 401 retry, a post-logout re-render)
+ * all share the first attempt and never fire a second network call.
+ *
+ * - Valid cookie -> access token restored, store becomes
+ *   "authenticated" (the reload case).
+ * - No/expired/revoked cookie -> store becomes "anonymous" with no
+ *   error surfaced; the login page renders normally.
+ * - Reused cookie -> the server revokes the whole family and answers
+ *   401, so this also lands on "anonymous" everywhere.
+ * A later reload is a new page load, so it attempts once again.
+ */
+export async function bootRefresh(): Promise<boolean> {
+  const store = useAuthStore.getState();
+  if (store.bootAttempted) {
+    // A boot attempt already ran — or is still running. A caller
+    // arriving while the refresh is in flight must SHARE it (return
+    // the in-flight promise), not read the not-yet-settled token:
+    // reading `accessToken` here would answer "false" to a
+    // concurrent caller even though the refresh succeeds a moment
+    // later. Once settled, `refreshInFlight` is null and the stored
+    // token is the settled outcome.
+    if (refreshInFlight) return refreshInFlight;
+    return store.accessToken !== null;
+  }
+  store.markBootAttempted();
+  const ok = await tryRefresh();
+  if (!ok) useAuthStore.getState().clearAuth(false);
+  return ok;
 }
 
 async function request<T>(

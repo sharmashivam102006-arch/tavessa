@@ -43,6 +43,11 @@
 #   backend/scripts/run_e2e_compose.sh [compose-file]
 # Env overrides: COMPOSE_API_BASE (default http://localhost:8000),
 #   COMPOSE_WEB_BASE (default http://localhost:5173).
+#   TAVESSA_DEMO_OWNER_PASSWORD: owner password used to bootstrap the
+#   owner inside the api container. When unset, a fresh random password
+#   is generated for this run (never a hardcoded default) and exported
+#   so verify_stage9_e2e.py --external logs in with the same value.
+#   See backend/README.md, "Local demo scripts".
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -51,7 +56,8 @@ API_BASE="${COMPOSE_API_BASE:-http://localhost:8000}"
 WEB_BASE="${COMPOSE_WEB_BASE:-http://localhost:5173}"
 SEED_JSON="${TMPDIR:-/tmp}/tavessa-e2e-seed.json"
 OWNER_EMAIL="owner@zaika.example"
-OWNER_PASSWORD="OwnerPass123"
+OWNER_PASSWORD="${TAVESSA_DEMO_OWNER_PASSWORD:-$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')}"
+export TAVESSA_DEMO_OWNER_PASSWORD="$OWNER_PASSWORD"
 
 command -v docker >/dev/null || { echo "docker is not installed" >&2; exit 1; }
 docker compose version >/dev/null 2>&1 || { echo "docker compose plugin is not available" >&2; exit 1; }

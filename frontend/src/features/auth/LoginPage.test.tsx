@@ -193,4 +193,35 @@ describe("LoginPage (Stage 7)", () => {
     );
     expect(mockedChangePassword).not.toHaveBeenCalled();
   });
+
+  it("redirects to /admin when boot refresh already restored the session", async () => {
+    // Stage 9 closure: a reload on /login (or a visit while signed
+    // in) restores the session in the background; the form must not
+    // be shown again.
+    useAuthStore.setState({
+      accessToken: "token-boot",
+      user: ownerUser(),
+      status: "authenticated",
+      bootAttempted: true,
+    });
+    renderLogin();
+
+    await waitFor(() => expect(screen.getByText("Admin home")).toBeInTheDocument());
+    expect(mockedLogin).not.toHaveBeenCalled();
+  });
+
+  it("does not redirect a must-change-password account restored by boot", async () => {
+    useAuthStore.setState({
+      accessToken: "token-boot",
+      user: ownerUser({ mustChangePassword: true }),
+      status: "authenticated",
+      bootAttempted: true,
+    });
+    renderLogin();
+
+    expect(
+      screen.getByRole("button", { name: "Sign in" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Admin home")).not.toBeInTheDocument();
+  });
 });

@@ -36,6 +36,10 @@ Exits 0 only if every check passes. Servers and the pgserver cluster
 are stopped/removed afterwards; nothing here touches the developer's
 real database. Requires: playwright + a Chromium binary in
 ~/.cache/ms-playwright (already present).
+
+Demo passwords: read from TAVESSA_DEMO_*_PASSWORD env vars when set,
+otherwise generated fresh per run (scripts/demo_passwords.py) — never
+hardcoded. See backend/README.md, "Local demo scripts".
 """
 
 from __future__ import annotations
@@ -61,6 +65,9 @@ SHOTS_DIR = REPO_DIR / "docs" / "stage8-screenshots"
 CHROME = Path.home() / ".cache" / "ms-playwright" / "chromium-1255" / "chrome-linux64" / "chrome"
 
 sys.path.insert(0, str(BACKEND_DIR))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from demo_passwords import ENV_KITCHEN, ENV_OWNER, ENV_WAITER, demo_password
 
 import pytest
 
@@ -71,11 +78,11 @@ BASE = f"http://127.0.0.1:{PORT}"
 WS_BASE = f"ws://127.0.0.1:{PORT}"
 VITE = "http://127.0.0.1:5173"
 OWNER_EMAIL = "owner@zaika.example"
-OWNER_PASSWORD = "OwnerPass123"
+OWNER_PASSWORD = demo_password(ENV_OWNER)
 WAITER_EMAIL = "waiter@zaika.example"
-WAITER_PASSWORD = "WaiterPass123"
+WAITER_PASSWORD = demo_password(ENV_WAITER)
 KITCHEN_EMAIL = "kitchen@zaika.example"
-KITCHEN_PASSWORD = "KitchenPass123"
+KITCHEN_PASSWORD = demo_password(ENV_KITCHEN)
 
 CHECKS: list[str] = []
 

@@ -1207,6 +1207,38 @@ pass.
     moderation (D6), menu image upload, staff assignments,
     busiest-hours/by-category analytics, RLS (decided NO for v1).
 
+**Stage 9 closure (25 Nov 2026, Shivam's review decisions — small follow-up, new commit on top of `5e76222`):**
+1. **Demo passwords → env vars.** The hardcoded demo passwords are gone
+   from the current verification scripts (`backend/scripts/verify_stage7_live.py`,
+   `screenshots_stage7.py`, `verify_stage8_e2e.py`, `verify_stage9_e2e.py`,
+   `run_e2e_compose.sh`): they now read `TAVESSA_DEMO_OWNER_PASSWORD` /
+   `TAVESSA_DEMO_WAITER_PASSWORD` / `TAVESSA_DEMO_KITCHEN_PASSWORD` from the
+   environment, or generate a fresh random password per run
+   (`backend/scripts/demo_passwords.py`, `secrets.token_urlsafe`) — there is
+   no hardcoded fallback. Documented in `backend/README.md` ("Local demo
+   scripts") and in each script's header. Test-file fixtures (e.g.
+   `test_admin.py`) were deliberately left alone — the decision covered
+   verification scripts only. The old values remain in public git history:
+   accepted and documented, history NOT rewritten, and NO gitleaks allowlist
+   added (no gitleaks scan runs in CI). D-ARCH-14.
+2. **Boot-time silent refresh.** A reload now restores the session from the
+   refresh cookie: the app boots in a "loading" auth state, the route
+   guards wait instead of redirecting, and one silent refresh
+   (`bootRefresh`, sharing the existing single-flight helper) restores the
+   access token. Preserved: HttpOnly cookie, rotation, reuse detection
+   (whole-family revocation), short-lived in-memory access tokens, no
+   token in localStorage/sessionStorage. No CSRF token — deliberate, see
+   `architecture.md` §9 (POST-only endpoint + SameSite=Lax; worst case is
+   a rotation the attacker cannot use). Known limit: a reload right after
+   logout makes one refresh attempt that answers 401 (the cookie is
+   gone); the app settles on anonymous. `/api/v1/auth/refresh` is not
+   rate-limited (only `/login` is) — recorded, not changed.
+3. **Guest copy.** The session-expired screen no longer mentions internal
+   "decision D5" — plain guest language only. Backend code comments
+   mentioning D5 were left alone (not guest-facing).
+4. **CI.** No hosted CI verification is claimed: the three GitHub Actions
+   jobs run on push after Shivam pushes; they had not run at closure time.
+
 ---
 
 ## Stage 10 — Deployment and documentation

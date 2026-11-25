@@ -15,6 +15,10 @@ Screenshots land in docs/stage7-screenshots/. Servers are stopped
 afterwards; nothing here touches the developer's real database.
 Requires: playwright (pip install playwright) + a Chromium binary
 in ~/.cache/ms-playwright (already present).
+
+Demo passwords: read from TAVESSA_DEMO_*_PASSWORD env vars when set,
+otherwise generated fresh per run (scripts/demo_passwords.py) — never
+hardcoded. See backend/README.md, "Local demo scripts".
 """
 
 from __future__ import annotations
@@ -36,15 +40,20 @@ SHOTS_DIR = REPO_DIR / "docs" / "stage7-screenshots"
 CHROME = Path.home() / ".cache" / "ms-playwright" / "chromium-1255" / "chrome-linux64" / "chrome"
 
 sys.path.insert(0, str(BACKEND_DIR))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from demo_passwords import ENV_KITCHEN, ENV_OWNER, ENV_WAITER, demo_password
 
 import pytest
 
 pgserver = pytest.importorskip("pgserver")
 
 OWNER_EMAIL = "owner@zaika.example"
-OWNER_PASSWORD = "owner-pass-123"
+OWNER_PASSWORD = demo_password(ENV_OWNER)
 WAITER_EMAIL = "waiter@zaika.example"
+WAITER_PASSWORD = demo_password(ENV_WAITER)
 KITCHEN_EMAIL = "kitchen@zaika.example"
+KITCHEN_PASSWORD = demo_password(ENV_KITCHEN)
 
 SEED_SNIPPET = """\
 import json, sys, os
@@ -156,14 +165,17 @@ def main() -> int:
             json={"email": OWNER_EMAIL, "password": OWNER_PASSWORD},
         ).json()["data"]["accessToken"]
         owner_h = {"Authorization": f"Bearer {owner_token}"}
-        for email, role in ((WAITER_EMAIL, "waiter"), (KITCHEN_EMAIL, "kitchen")):
+        for email, password, role in (
+            (WAITER_EMAIL, WAITER_PASSWORD, "waiter"),
+            (KITCHEN_EMAIL, KITCHEN_PASSWORD, "kitchen"),
+        ):
             r = api.post("/api/v1/admin/users",
-                         json={"email": email, "password": "TempPass123", "role": role},
+                         json={"email": email, "password": password, "role": role},
                          headers=owner_h)
             assert r.status_code == 201, r.text
         waiter_token = api.post(
             "/api/v1/auth/login",
-            json={"email": WAITER_EMAIL, "password": "TempPass123"},
+            json={"email": WAITER_EMAIL, "password": WAITER_PASSWORD},
         ).json()["data"]["accessToken"]
 
         # Live data: Table 5 order -> bill -> paid in full by waiter,

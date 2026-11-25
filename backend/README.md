@@ -47,6 +47,39 @@ python -m app.seed.demo_tokens --table 5   # dev-only QR token; prints the guest
                                            # URL once; refuses in production
 ```
 
+## Local demo scripts
+
+The verification and screenshot scripts in `scripts/` (`verify_stage7_live.py`,
+`verify_stage8_e2e.py`, `verify_stage9_e2e.py`, `screenshots_stage7.py`) create
+their own demo users in-run (owner via the bootstrap CLI, waiter/kitchen via
+the admin API) against an ephemeral database. They are not part of pytest.
+
+```bash
+cd backend
+.venv/bin/python scripts/verify_stage9_e2e.py   # 81 checks + screenshots
+.venv/bin/python scripts/verify_stage7_live.py
+.venv/bin/python scripts/screenshots_stage7.py  # docs/stage7-screenshots/
+```
+
+Demo passwords (Stage 9 closure — never hardcoded):
+
+| Role | Env var |
+| --- | --- |
+| Owner | `TAVESSA_DEMO_OWNER_PASSWORD` |
+| Waiter | `TAVESSA_DEMO_WAITER_PASSWORD` |
+| Kitchen | `TAVESSA_DEMO_KITCHEN_PASSWORD` |
+
+When an env var is unset, the script generates a fresh random password for
+that run (`scripts/demo_passwords.py`, `secrets.token_urlsafe`) — there is no
+hardcoded fallback. Set the vars to reproduce a run, or to share one password
+between two scripts: `run_e2e_compose.sh` bootstraps the owner inside the api
+container and then runs `verify_stage9_e2e.py --external`, which logs in as
+that owner, so the wrapper exports `TAVESSA_DEMO_OWNER_PASSWORD` for both.
+
+The old hardcoded demo values remain in public git history. That is accepted
+and documented (see `docs/development-roadmap.md`, Stage 9 closure note) —
+history is not rewritten, and no gitleaks allowlist is added for them.
+
 ## Tests
 
 ```bash

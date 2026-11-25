@@ -16,6 +16,10 @@ Usage:  cd backend && .venv/bin/python scripts/verify_stage7_live.py
 Exits 0 only if every check passes. The uvicorn server and the
 pgserver cluster are stopped/removed afterwards; nothing here
 touches the developer's real database.
+
+Demo passwords: read from TAVESSA_DEMO_*_PASSWORD env vars when set,
+otherwise generated fresh per run (scripts/demo_passwords.py) — never
+hardcoded. See backend/README.md, "Local demo scripts".
 """
 
 from __future__ import annotations
@@ -33,6 +37,9 @@ from zoneinfo import ZoneInfo
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from demo_passwords import ENV_KITCHEN, ENV_OWNER, ENV_WAITER, demo_password
 
 import pytest
 
@@ -42,11 +49,11 @@ PORT = 8123
 BASE = f"http://127.0.0.1:{PORT}"
 WS_BASE = f"ws://127.0.0.1:{PORT}"
 OWNER_EMAIL = "owner@zaika.example"
-OWNER_PASSWORD = "owner-pass-123"
+OWNER_PASSWORD = demo_password(ENV_OWNER)
 WAITER_EMAIL = "waiter@zaika.example"
-WAITER_PASSWORD = "waiter-pass-123"
+WAITER_PASSWORD = demo_password(ENV_WAITER)
 KITCHEN_EMAIL = "kitchen@zaika.example"
-KITCHEN_PASSWORD = "kitchen-pass-123"
+KITCHEN_PASSWORD = demo_password(ENV_KITCHEN)
 
 CHECKS: list[str] = []
 
