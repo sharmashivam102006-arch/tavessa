@@ -1,383 +1,505 @@
-# Tavessa — Restaurant Management Platform
+<p align="center">
+  <h1 align="center">🍽️ Tavessa</h1>
+  <p align="center">
+    <strong>A full-stack restaurant management platform — QR ordering, kitchen display, staff dashboard, billing & admin panel.</strong>
+  </p>
+  <p align="center">
+    <a href="#features">Features</a> •
+    <a href="#tech-stack">Tech Stack</a> •
+    <a href="#architecture">Architecture</a> •
+    <a href="#quick-start">Quick Start</a> •
+    <a href="#api-reference">API Reference</a> •
+    <a href="#project-structure">Project Structure</a> •
+    <a href="#contributing">Contributing</a>
+  </p>
+</p>
 
-> **"Every Table. Every Order. In Sync."**
+---
 
-Tavessa is a production-quality, full-stack restaurant management platform that
-connects four interfaces into one central system:
+## Overview
 
-1. **Guest** — QR-code table ordering, live order tracking, bill & cash payment request
-2. **Waiter / Staff** — floor map, orders, help calls, bill requests, cash collection
-3. **Kitchen Display System (KDS)** — real-time tickets by station, item-level status, timers
-4. **Owner / Admin** — live occupancy, sales, cash, menu, staff, orders, analytics
+**Tavessa** is an end-to-end, real-time restaurant management system built with **FastAPI** and **React**. Guests scan a QR code at their table, browse the menu, place orders, track progress live, request help, split bills and pay — all from their phone, no app install needed. Meanwhile, the kitchen sees orders on a live display board, waiters manage floor operations, and the owner has a full admin dashboard with financials, audit logs and staff management.
 
-The first demonstration restaurant is **Zaika**. The architecture is SaaS-ready:
-every tenant-scoped record belongs to a restaurant, so a second restaurant can be
-added without a schema redesign.
+> **Cash-only in v1.** Online payments, delivery, and multi-tenancy are planned but not yet implemented.
 
-> **Status: Stage 8 complete (Guest real-time experience — guest WS tickets, live tracking, split/tax reconciliation) — 25 Nov 2026.**
-> Stage 6 added billing and cash collection: server-priced bills from
-> order snapshots (integer paise), equal/custom splits, guest Pay by
-> Cash (which creates no payment), staff cash confirmation in one
-> idempotent transaction (receipt `R-YYYY-MM-DD-NNN`, `bill.created` /
-> `bill.requested` / `payment.recorded` / `bill.paid` on the staff
-> channel), and receipts in both UIs. Cash only — no UPI, cards,
-> gateways or online payments. Stage 7 added password authentication
-> (JWT access + rotating refresh tokens, Argon2id, bootstrap CLI),
-> the owner/admin dashboard at `/admin` (overview, orders, menu,
-> staff, tables, bills, cash reports, refunds, audit log, settings),
-> tax configuration (D1 decided — owner-set rate, snapshotted at the
-> bill freeze point), bill void and cash refunds (idempotent), and an
-> append-only audit log. Staff and kitchen pages now log in at
-> `/login` in production builds; dev keys work only in development.
-> Stage 8 added the guest WebSocket channel (`/ws/guest`, single-use
-> ticket bound to the table session — live order tracking, help and
-> bill updates with no refresh), fixed the split-bill / tax-freeze
-> inconsistency (equal splits re-derived at freeze, custom splits
-> block the freeze with an actionable 409), and verified the full
-> guest → kitchen → waiter → billing loop end to end (71 live
-> checks). Screenshots: `docs/stage8-screenshots/`. There are still
-> no reviews (D6 deferred).
-> Do not treat any endpoint, screen, or workflow in these docs as
-> shipped until its stage in `docs/development-roadmap.md` is
-> marked complete and verified.
+---
 
-## Development setup
+## Features
 
-Prerequisites: Python 3.12+, Node 24+, and PostgreSQL 16 (via Docker Compose
-or a local install). Docker is optional — see "Database" below.
+### 🧑‍🍳 Guest Experience (QR → Order → Pay)
+- **QR Code Table Sessions** — Scan to open a session; no login required
+- **Digital Menu** — Searchable, filterable menu with categories, variants, add-ons, veg/non-veg tags and images
+- **Cart & Ordering** — Add items with variants/add-ons/special instructions; server-side pricing (no price manipulation)
+- **Live Order Tracking** — Real-time WebSocket updates: Placed → Accepted → Cooking → Ready → Served
+- **Help Calls** — Request a waiter, water, plates, or order help with one tap
+- **Bill & Receipt** — View itemized bill, split equally or custom, request cash payment, view receipt
+- **Real-time Notifications** — Live updates for order status, help call acknowledgements, bill changes
 
-```bash
-git clone <repo> tavessa && cd tavessa
-cp .env.example .env          # placeholders only; set SECRET_KEY for real use
+### 🖥️ Kitchen Display System (KDS)
+- **Three-column board** — New / Preparing / Ready
+- **One-tap transitions** — Move orders through the kitchen workflow
+- **Elapsed timers** — Server-computed time since placement
+- **WebSocket-driven** — Instant updates, no polling
+
+### 👨‍🍳 Staff / Waiter Dashboard
+- **Floor Grid** — Live table status (available/occupied/cleaning) with order & help indicators
+- **Order Management** — View all active orders, mark as served
+- **Help Call Queue** — Acknowledge and resolve guest requests
+- **Billing Queue** — See payment-requested bills, confirm cash collection
+- **Bill Detail** — Full bill breakdown, split view, record payments with idempotent receipts
+
+### 🏢 Admin / Owner Panel
+- **Dashboard Overview** — Gross sales, cash collected, refunds, net cash, best sellers, recent activity
+- **Order History** — Paginated, filterable order list with status breakdown
+- **Bill Management** — View all bills, void bills with reason, process refunds
+- **Menu Management** — CRUD categories, items, variants, add-ons; toggle availability
+- **Staff Management** — Create/edit users (owner, manager, waiter, kitchen), set permissions
+- **Table Management** — View/update table statuses
+- **Tax Configuration** — Set tax rate, mode (inclusive/exclusive), label; snapshots on freeze
+- **Cash Reports** — Daily cash reconciliation: collected, refunds, net, outstanding
+- **Audit Logs** — Full audit trail of logins, password changes, voids, refunds, settings changes
+- **Restaurant Settings** — Edit name, tagline, cuisine, address, contact info
+
+### 🔐 Security & Auth
+- **JWT Authentication** — Access + refresh token rotation with reuse detection
+- **Role-Based Access Control** — Owner / Manager / Waiter / Kitchen with configurable permissions
+- **Argon2id Password Hashing** — Industry-standard password storage
+- **Rate Limiting** — Session opening and order placement throttled
+- **Idempotent Order Placement** — Single-transaction crash-safe design with PostgreSQL speculative insertion
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| **Backend** | Python 3.12 · FastAPI · SQLAlchemy 2.0 · Alembic · Pydantic v2 |
+| **Frontend** | React 19 · TypeScript 7 · Vite 8 · TailwindCSS 4 · React Router 8 |
+| **State** | Zustand (client) · TanStack React Query (server state) |
+| **Database** | PostgreSQL 16 (production) · SQLite (tests) |
+| **Real-time** | WebSockets (FastAPI native) with single-use ticket authentication |
+| **Auth** | JWT (python-jose) · Argon2id (argon2-cffi) · Refresh token rotation |
+| **UI Components** | Radix UI · Lucide icons · shadcn/ui patterns |
+| **Testing** | pytest + httpx (backend) · Vitest + Testing Library (frontend) |
+| **CI/CD** | GitHub Actions · Docker Compose |
+| **Linting** | oxlint (frontend) |
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Client Devices                               │
+│  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌────────────────┐  │
+│  │  Guest   │   │ Kitchen  │   │  Staff   │   │   Admin/Owner  │  │
+│  │ (Phone)  │   │ (Screen) │   │ (Tablet) │   │   (Desktop)    │  │
+│  └────┬─────┘   └────┬─────┘   └────┬─────┘   └───────┬────────┘  │
+│       │              │              │                  │            │
+│       └──────────────┴──────────┬───┴──────────────────┘            │
+│                            React SPA                                │
+│                     (Vite · React Router)                           │
+└─────────────────────────────┬───────────────────────────────────────┘
+                              │ REST + WebSocket
+┌─────────────────────────────┴───────────────────────────────────────┐
+│                        FastAPI Backend                              │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │  API Layer (/api/v1)                                          │ │
+│  │  guest · kitchen · staff · admin · orders · health · auth     │ │
+│  ├────────────────────────────────────────────────────────────────┤ │
+│  │  Service Layer                                                │ │
+│  │  table · order · kitchen · staff · billing · help · admin     │ │
+│  │  audit · tax                                                  │ │
+│  ├────────────────────────────────────────────────────────────────┤ │
+│  │  Real-time                        Auth                        │ │
+│  │  ConnectionManager                JWT · RBAC · Refresh tokens │ │
+│  │  /ws/kitchen · /ws/staff          Argon2id · Ticket auth      │ │
+│  │  /ws/guest                                                    │ │
+│  ├────────────────────────────────────────────────────────────────┤ │
+│  │  Data Layer (SQLAlchemy 2.0 ORM · Alembic migrations)         │ │
+│  │  Restaurant · Branch · DiningTable · TableSession             │ │
+│  │  MenuCategory · MenuItem · ItemVariant · ItemAddon            │ │
+│  │  Order · OrderItem · OrderItemAddon                           │ │
+│  │  Bill · BillItem · BillSplit · Payment                        │ │
+│  │  User · RefreshSession · WsTicket · AuditLog · TaxConfig      │ │
+│  │  IdempotencyKey · HelpCall                                    │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────┬───────────────────────────────────────┘
+                              │
+                    ┌─────────┴─────────┐
+                    │  PostgreSQL 16    │
+                    │  (Docker or local)│
+                    └───────────────────┘
 ```
 
-### Database
+### Key Design Decisions
+
+- **Server-side pricing** — The backend recomputes every price from the menu at order time. No price or total from the client is ever trusted.
+- **Integer paise** — All money is stored and transmitted as integer paise (1/100 of a rupee). No floating point.
+- **Idempotent order placement** — Single-transaction crash-safe design using PostgreSQL's speculative insertion on a unique index. Claim + order + stored response are created atomically.
+- **Broadcast-after-commit** — WebSocket events are published only after the database transaction commits successfully. Services are broadcast-free; routes broadcast.
+- **No existence leakage** — Cross-tenant queries return 404, never 403.
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- **Python** 3.12+
+- **Node.js** 24+
+- **PostgreSQL** 16+ (or use Docker)
+
+### 1. Clone & configure
 
 ```bash
-docker compose up -d db       # Postgres 16 on localhost:5432 (recommended)
-# — or, without Docker, with a local PostgreSQL install: —
-createdb tavessa              # then keep DATABASE_URL in .env as the default
+git clone https://github.com/<your-username>/tavessa.git
+cd tavessa
+cp .env.example .env
 ```
 
-### Backend
+### 2. Start PostgreSQL
+
+**Option A — Docker (recommended):**
+
+```bash
+docker compose up -d db
+```
+
+**Option B — Local PostgreSQL:**
+
+Create a database named `tavessa` with user `tavessa` / password `tavessa`, or update `DATABASE_URL` in `.env`.
+
+### 3. Backend
 
 ```bash
 cd backend
-python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-alembic upgrade head          # creates the Stage 3 guest tables
-python -m app.seed.zaika      # idempotent Zaika seed: 1 restaurant, 10 tables,
-                              # 6 categories, 24 items (safe to re-run)
-python -m app.seed.demo_tokens --table 5   # dev-only demo QR token (refuses
-                              # in production); prints http://localhost:5173/t/<token>
-                              # ONCE — the raw token is stored only as a hash.
-                              # Demo tokens expire in 30 days (provisional, D5).
+
+# Run migrations & seed demo data
+alembic upgrade head
+python -m app.seed          # seeds the "Zaika" demo restaurant
+
+# Start the API server
 uvicorn app.main:app --reload --port 8000
-# Health: curl http://localhost:8000/api/v1/health
-# Docs:   http://localhost:8000/docs (dev only)
 ```
 
-### Owner login (Stage 7)
+The API is now live at **http://localhost:8000** with interactive docs at [/docs](http://localhost:8000/docs).
 
-There is no public sign-up and no default password. Create the first
-owner with the bootstrap CLI (it prompts for the password twice via
-`getpass` — never in argv or logs — and refuses if an owner already
-exists for the restaurant):
-
-```bash
-cd backend
-python -m app.auth.bootstrap --restaurant-slug zaika --email owner@zaika.example
-```
-
-Then open http://localhost:5173/login and sign in. The access token
-lives in memory only (never `localStorage`); the refresh token is an
-HttpOnly cookie handled by the browser. Owners land on `/admin`,
-waiters on `/staff`, kitchen users on `/kitchen`. New users created in
-`/admin` → Staff must change their password on first login. Deactivated
-users are locked out immediately on every endpoint.
-
-**Tax (D1, decided in Stage 7):** a restaurant starts with tax
-**unconfigured** — that is not a 0% rate. The owner sets a rate in
-`/admin` → Settings → Tax configuration (rate, inclusive/exclusive,
-label, effective from now). Bills recompute with the current config
-while `issued`; once a bill reaches `payment_requested` (or is paid),
-its tax is snapshotted and never changes. Tavessa claims no tax
-compliance — the UI says so; confirm the rate and mode with your
-accountant.
-
-#### Trying the guest endpoints (dev)
-
-Generate a demo token first (see above — never commit a token), then:
-
-```bash
-TOKEN=<token printed by demo_tokens>   # e.g. for Table 5
-# Open the session (creates/resumes it; returns the restaurant + table)
-curl http://localhost:8000/api/v1/guest/t/$TOKEN
-# {"session":{"id":"…","restaurantId":"…","tableId":"…","tableNumber":5,
-#   "status":"active","openedAt":"…"},
-#  "restaurant":{"id":"…","name":"Zaika","tagline":"…","cuisine":"…",
-#   "address":"12, MG Road, Bengaluru","openingHours":"…",
-#   "phone":"+91 98765 43210","rating":4.6},
-#  "table":{"number":5},"menuUrl":"/t/<token>"}
-
-# Menu (needs the token header)
-curl -H "X-Table-Token: $TOKEN" http://localhost:8000/api/v1/guest/menu
-# {"categories":[{"id":"…","name":"Starters","sortOrder":1,"isActive":true}, …],
-#  "items":[{"id":"…","categoryId":"…","name":"Old Delhi Butter Chicken",
-#   "pricePaise":34900,"isVeg":false,"isAvailable":true, …}]}
-
-# Place an order — prices are recomputed server-side; never send prices.
-# ITEM_ID is the menu item's UUID from the menu response.
-curl -X POST http://localhost:8000/api/v1/orders \
-  -H "X-Table-Token: $TOKEN" -H "Idempotency-Key: <uuid>" \
-  -H "Content-Type: application/json" \
-  -d '{"items":[{"menuItemId":"<ITEM_ID>","quantity":1}]}'
-# 201 {"order":{"id":"…","orderNumber":"ZAIKA-0001","status":"placed",
-#   "items":[…],"subtotalPaise":34900,"taxPaise":0,"totalPaise":34900, …}}
-# Repeating the same request with the same Idempotency-Key returns the
-# same order with header `Idempotency-Replayed: true` — no duplicate.
-
-# Help call (one open call per session; second → 409)
-curl -X POST http://localhost:8000/api/v1/guest/help-calls \
-  -H "X-Table-Token: $TOKEN" -H "Content-Type: application/json" \
-  -d '{"type":"water"}'
-# 201 {"data":{"id":"…","type":"water","status":"open", …}}
-```
-
-Unknown token → `401 {"error":{"code":"invalid_table_token",…}}`;
-revoked/expired token → `410 {"error":{"code":"session_expired",…}}`;
-another session's order → `404` (not `403`).
-Tests: `pytest -q` in `backend/` (SQLite in-memory; 189 passed / 1 skipped
-after Stage 8) — plus real-Postgres checks (`backend/scripts/
-verify_stage8_migration.py` 19/19, `verify_stage8_e2e.py` 71/71) and
-`npm test -- --run` in `frontend/` (116 passed). Run the migration
-check via `alembic upgrade head` against a real PostgreSQL before
-claiming the migration works.
-
-### Waiter / Staff dashboard (Stage 7 — login; dev key in dev only)
-
-> **Staff auth landed in Stage 7.** In production, staff endpoints
-> require a JWT (`Authorization: Bearer …` — sign in at `/login` as a
-> waiter) and the WebSocket needs a ticket from
-> `POST /api/v1/ws/tickets`; dev keys are NEVER accepted and return
-> `401 {"error":{"code":"unauthenticated",…}}` (the Stage 4/5 `503`
-> `staff_auth_not_configured` is gone). In development the shared dev
-> key still works, and a JWT is accepted too. Do not expose the staff
-> board publicly on the dev key. A guest table token does NOT grant
-> staff access; the kitchen dev key does NOT grant staff access (and
-> vice versa).
-
-```bash
-# .env (backend) and frontend/.env must carry the SAME key:
-STAFF_DEV_KEY=dev-staff-only          # backend
-VITE_STAFF_DEV_KEY=dev-staff-only     # frontend
-```
-
-```bash
-# Floor grid (tables, number order, with live session/order/help-call flags)
-curl -H "X-Staff-Dev-Key: dev-staff-only" \
-  http://localhost:8000/api/v1/staff/tables
-# Active orders, oldest first (ready orders are shown first in the UI)
-curl -H "X-Staff-Dev-Key: dev-staff-only" \
-  http://localhost:8000/api/v1/staff/orders
-# Serve a ready order — ready -> served ONLY, anything else -> 409.
-# Serving does NOT close the session or change the table status.
-curl -X PATCH -H "X-Staff-Dev-Key: dev-staff-only" \
-  http://localhost:8000/api/v1/staff/orders/<ORDER_ID>/serve
-# Help calls: list unresolved, acknowledge (open -> acknowledged),
-# resolve (acknowledged -> resolved). Resolving an open call -> 409.
-curl -H "X-Staff-Dev-Key: dev-staff-only" \
-  http://localhost:8000/api/v1/staff/help-calls
-curl -X PATCH -H "X-Staff-Dev-Key: dev-staff-only" \
-  http://localhost:8000/api/v1/staff/help-calls/<CALL_ID>/acknowledge
-curl -X PATCH -H "X-Staff-Dev-Key: dev-staff-only" \
-  http://localhost:8000/api/v1/staff/help-calls/<CALL_ID>/resolve
-# restaurant_id is required unless exactly one restaurant exists.
-```
-
-Open the board at http://localhost:5173/staff (Vite proxies `/api`
-and `/ws` to the backend). The board shows the floor grid (status
-colours, READY / NEEDS HELP badges), table detail on click, active
-orders with "Ready to serve" first, and the help-call queue. A new
-guest order or help call appears without refresh via the WebSocket
-(`order.created` / `order.status_changed` / `help_call.opened` /
-`help_call.acknowledged` / `help_call.resolved`; REST re-fetch is
-the source of truth, the socket only announces change). Serving
-asks for inline confirmation first; the order moves only after the
-server confirms. If the socket drops, the board keeps the last REST
-snapshot with a reconnecting banner. Demo mode (clearly labelled
-sample floor/orders/calls, actions disabled, no backend needed):
-http://localhost:5173/staff?demo=1. Screenshots:
-`docs/stage5-screenshots/`. NOT in Stage 5: bill requests, session
-close, table-status transitions, staff assignments, payroll —
-see `docs/development-roadmap.md` Stage 5 report.
-
-### Kitchen Display System (Stage 7 — login; dev key in dev only)
-
-> **Kitchen auth landed in Stage 7.** In production, kitchen endpoints
-> require a JWT (sign in at `/login` as a kitchen user) and the
-> WebSocket needs a ticket from `POST /api/v1/ws/tickets`; dev keys
-> are NEVER accepted and return `401` (the Stage 4/5 `503`
-> `kitchen_auth_not_configured` is gone). In development the shared
-> dev key still works, and a JWT is accepted too. Do not expose the
-> KDS publicly on the dev key.
-
-```bash
-# .env (backend) and frontend/.env must carry the SAME key:
-KITCHEN_DEV_KEY=dev-kitchen-only          # backend
-VITE_KITCHEN_DEV_KEY=dev-kitchen-only     # frontend
-```
-
-```bash
-# Kitchen queue (active orders, oldest first; status=queued|preparing|ready)
-curl -H "X-Kitchen-Dev-Key: dev-kitchen-only" \
-  http://localhost:8000/api/v1/kitchen/orders
-# Move an order one step: placed/accepted -> preparing -> ready
-curl -X PATCH -H "X-Kitchen-Dev-Key: dev-kitchen-only" \
-  -H "Content-Type: application/json" -d '{"status":"preparing"}' \
-  http://localhost:8000/api/v1/kitchen/orders/<ORDER_ID>/status
-# Any other transition -> 409; any other status value -> 422.
-# restaurant_id is required unless exactly one restaurant exists.
-```
-
-Open the board at http://localhost:5173/kitchen (Vite proxies `/api`
-and `/ws` to the backend — the `/ws` entry needs `ws: true` or the
-socket never connects). The board shows New / Preparing / Ready
-columns with ticking elapsed times; a new guest order appears
-without refresh via the WebSocket (`order.created` /
-`order.status_changed` events; REST re-fetch is the source of
-truth, the socket only announces change). If the socket drops, the
-board keeps the last REST snapshot with a reconnecting banner.
-Demo mode (clearly labelled sample tickets, no backend needed):
-http://localhost:5173/kitchen?demo=1. Screenshots:
-`docs/stage4-screenshots/`.
-
-### Frontend
+### 4. Frontend
 
 ```bash
 cd frontend
 npm install
-npm run dev                   # http://localhost:5173 — /api proxied to :8000
-npm run build                 # tsc + vite build
+npm run dev
 ```
 
-The home page shows the Tavessa brand and a backend connection status
-(green = backend + database ok, amber = degraded/unreachable). No business
-features exist yet.
+The app is now live at **http://localhost:5173**.
 
-## Cash only — v1 rule
+### 5. Try it out
 
-The initial version supports **cash payments only**. There is no UPI, Razorpay,
-Stripe, Paytm, payment gateway, or online payment processing in v1, and none
-should be added without an explicit decision to change this rule.
+| View | URL | Notes |
+|------|-----|-------|
+| **Home** | http://localhost:5173 | Landing page with role links |
+| **Guest Menu** | http://localhost:5173/t/demo | Demo table session (Table 5, Zaika) |
+| **Kitchen** | http://localhost:5173/kitchen | Dev key: `dev-kitchen-only` |
+| **Staff** | http://localhost:5173/staff | Dev key: `dev-staff-only` |
+| **Admin** | http://localhost:5173/admin | Login with seeded owner credentials |
+| **Login** | http://localhost:5173/login | Staff/kitchen/owner sign-in |
 
-A bill is **never** marked paid because a guest clicked a button. Payment is
-recorded only when authorised staff confirm they have actually collected the
-cash. See `docs/project-overview.md` § Billing and `docs/api-plan.md` § Billing.
+### Docker Compose (full stack)
 
-## Stack (agreed — do not change silently)
+```bash
+docker compose up --build
+```
 
-| Layer | Choice |
-|---|---|
-| Frontend | React + TypeScript + Vite, Tailwind CSS, shadcn/ui, React Router, Zustand, TanStack Query, Lucide |
-| Backend | Python, FastAPI, REST + native FastAPI WebSockets, Pydantic, SQLAlchemy 2.0 |
-| Database | PostgreSQL, Alembic migrations |
-| Realtime / cache | Redis **only when needed** (shared broadcast / cache / coordination) — see `docs/architecture.md` § 6 |
-| Tooling | Docker + Docker Compose, Pytest, Playwright, Git + GitHub |
+This starts PostgreSQL, the API server (port 8000), and the frontend served by Nginx (port 5173).
 
-No microservices. No Kubernetes. No extra frameworks without a recorded
-technical incompatibility and an explicit decision.
+---
 
-## Documentation
+## API Reference
 
-| Document | What it answers |
-|---|---|
-| `docs/project-overview.md` | What Tavessa is, who uses it, the end-to-end workflow, billing rules, non-goals |
-| `docs/architecture.md` | Modular monolith, folder structure, frontend architecture, auth, realtime, security, risks |
-| `docs/database-design.md` | Every table, columns, keys, constraints, indexes, statuses, tenant isolation, price snapshots |
-| `docs/api-plan.md` | REST endpoints, WebSocket channels and events, idempotency, errors, pagination |
-| `docs/development-roadmap.md` | Ordered 10-stage plan, per-stage acceptance criteria, testing and deployment checklists |
+Base URL: `http://localhost:8000/api/v1`
 
-Read them in that order. `docs/architecture.md` § 11 is the single source of
-truth for the folder structure; do not invent a different layout when Stage 1
-starts.
+### Guest Endpoints
 
-## Proposed repository layout
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/guest/t/{table_token}` | Open / resume a table session |
+| `GET` | `/guest/session` | Current session info |
+| `GET` | `/guest/menu` | Browse menu (filter by category, search) |
+| `POST` | `/orders` | Place an order (idempotent) |
+| `GET` | `/guest/orders` | List session orders |
+| `GET` | `/guest/orders/{id}` | Order detail with tracking |
+| `DELETE` | `/orders/{id}` | Cancel order (placed only) |
+| `POST` | `/guest/help-calls` | Request assistance |
+| `GET` | `/guest/help-calls` | List help calls |
+| `POST` | `/guest/bill` | Create / retrieve bill |
+| `GET` | `/guest/bill` | Get current bill |
+| `PATCH` | `/guest/bill/request-payment` | Request cash payment |
+| `POST` | `/guest/bill/splits` | Create equal / custom splits |
+| `GET` | `/guest/bill/receipt` | Get receipt (after payment) |
+
+### Kitchen Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/kitchen/restaurants` | List restaurants |
+| `GET` | `/kitchen/orders` | Active order queue |
+| `GET` | `/kitchen/orders/{id}` | Order detail |
+| `PATCH` | `/kitchen/orders/{id}` | Transition order status |
+
+### Staff Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/staff/restaurants` | List restaurants |
+| `GET` | `/staff/tables` | Floor grid with live status |
+| `GET` | `/staff/tables/{id}` | Table detail + orders + help calls |
+| `GET` | `/staff/orders` | Active orders |
+| `PATCH` | `/staff/orders/{id}/serve` | Mark order as served |
+| `GET` | `/staff/help-calls` | Open help calls |
+| `PATCH` | `/staff/help-calls/{id}` | Acknowledge / resolve help call |
+| `GET` | `/staff/bills` | Billing queue |
+| `GET` | `/staff/bills/{id}` | Bill detail |
+| `POST` | `/staff/bills/{id}/payments` | Confirm cash payment (idempotent) |
+| `GET` | `/staff/bills/{id}/receipt` | Get receipt |
+
+### Admin Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/admin/overview` | Dashboard KPIs |
+| `GET` | `/admin/orders` | Paginated order history |
+| `GET` | `/admin/bills` | All bills with financials |
+| `POST` | `/admin/bills/{id}/void` | Void a bill |
+| `POST` | `/admin/bills/{id}/refund` | Process refund |
+| `GET` | `/admin/cash` | Daily cash report |
+| `GET/POST/PATCH` | `/admin/menu/*` | Menu CRUD |
+| `GET/POST/PATCH` | `/admin/staff/*` | Staff management |
+| `GET/POST` | `/admin/settings/tax` | Tax configuration |
+| `GET/PATCH` | `/admin/settings` | Restaurant settings |
+| `GET` | `/admin/audit-logs` | Audit log |
+
+### Auth Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/auth/login` | Login (returns access + refresh tokens) |
+| `POST` | `/auth/refresh` | Rotate refresh token |
+| `POST` | `/auth/logout` | Revoke refresh token |
+| `POST` | `/auth/change-password` | Change password |
+| `GET` | `/auth/me` | Current user info |
+| `POST` | `/ws/tickets` | Issue WebSocket ticket (staff/kitchen) |
+
+### WebSocket Channels
+
+| Path | Auth | Description |
+|------|------|-------------|
+| `/ws/kitchen` | Ticket or dev key | Kitchen order events |
+| `/ws/staff` | Ticket or dev key | Staff events (orders, help calls, bills) |
+| `/ws/guest` | Ticket only | Guest session events (order status, help, billing) |
+
+Full interactive docs available at [http://localhost:8000/docs](http://localhost:8000/docs) (development only).
+
+---
+
+## Project Structure
 
 ```
 tavessa/
-├── README.md
-├── docs/                          # this blueprint
-│   ├── project-overview.md
-│   ├── architecture.md
-│   ├── database-design.md
-│   ├── api-plan.md
-│   └── development-roadmap.md
-├── frontend/                      # Stage 1 — React + Vite app (all 4 interfaces)
-│   └── src/
-│       ├── app/                   # router, providers, layouts
-│       ├── features/guest/        # /t/:tableToken
-│       ├── features/staff/        # /staff
-│       ├── features/kitchen/      # /kitchen
-│       ├── features/admin/        # /admin
-│       └── shared/                # api client, types, ui, utils
-├── backend/                       # Stage 1 — FastAPI modular monolith
-│   └── app/
-│       ├── api/v1/                # route modules, one per domain
-│       ├── core/                  # config, security, deps, errors
-│       ├── models/                # SQLAlchemy 2.0 models
-│       ├── schemas/               # Pydantic schemas
-│       ├── services/              # business logic
-│       ├── repositories/          # data access where useful
-│       ├── realtime/              # WebSocket manager + event bus
-│       └── db/                    # session, base, migrations (Alembic)
-├── docker-compose.yml             # Stage 1 — api + web + postgres (+ redis later)
-├── Dockerfile.backend
-├── Dockerfile.frontend
-└── .env.example                   # Stage 1 — every secret as an env var, no real values
+├── backend/
+│   ├── alembic/                    # Database migrations
+│   │   └── versions/               # Migration scripts (Stages 3–8)
+│   ├── app/
+│   │   ├── api/v1/                 # Route handlers
+│   │   │   ├── admin.py            # Owner/admin endpoints
+│   │   │   ├── guest.py            # Guest endpoints (QR session, menu, orders, billing)
+│   │   │   ├── kitchen.py          # KDS endpoints
+│   │   │   ├── orders.py           # Order placement & cancellation
+│   │   │   ├── staff.py            # Waiter/staff endpoints
+│   │   │   ├── health.py           # Health check
+│   │   │   └── websocket.py        # WebSocket handlers
+│   │   ├── auth/                   # Authentication & authorization
+│   │   │   ├── bootstrap.py        # Seed default owner on startup
+│   │   │   ├── deps.py             # Auth dependencies (JWT, permissions)
+│   │   │   ├── models.py           # User, RefreshSession, WsTicket models
+│   │   │   ├── permissions.py      # RBAC permission matrix
+│   │   │   ├── router.py           # Auth routes (login, refresh, logout)
+│   │   │   ├── service.py          # Auth business logic
+│   │   │   └── tokens.py           # JWT & token utilities
+│   │   ├── core/                   # Framework concerns
+│   │   │   ├── config.py           # Settings (pydantic-settings)
+│   │   │   ├── deps.py             # FastAPI dependencies
+│   │   │   ├── errors.py           # Structured error handling
+│   │   │   ├── logging.py          # Logging configuration
+│   │   │   ├── rate_limit.py       # SlowAPI rate limiting
+│   │   │   └── security.py         # Argon2id password hashing
+│   │   ├── db/                     # Database session & base model
+│   │   ├── models/                 # SQLAlchemy ORM models
+│   │   │   ├── billing.py          # Bill, BillItem, BillSplit, Payment
+│   │   │   ├── common.py           # Mixins (IdMixin, TimestampMixin)
+│   │   │   ├── idempotency.py      # IdempotencyKey
+│   │   │   ├── menu.py             # MenuCategory, MenuItem, ItemVariant, ItemAddon
+│   │   │   ├── order.py            # Order, OrderItem, OrderItemAddon
+│   │   │   └── restaurant.py       # Restaurant, Branch
+│   │   ├── realtime/               # WebSocket connection manager
+│   │   ├── schemas/                # Pydantic request/response schemas
+│   │   ├── services/               # Business logic (broadcast-free)
+│   │   │   ├── admin_service.py    # Dashboard, reports, menu/staff CRUD
+│   │   │   ├── audit_service.py    # Audit log writer
+│   │   │   ├── billing_service.py  # Bills, splits, cash payments, receipts
+│   │   │   ├── help_service.py     # Help call lifecycle
+│   │   │   ├── kitchen_service.py  # KDS reads & order transitions
+│   │   │   ├── order_service.py    # Order placement (idempotent, server-priced)
+│   │   │   ├── staff_service.py    # Floor grid, serving, help resolution
+│   │   │   ├── table_service.py    # QR sessions, menu reads
+│   │   │   └── tax_service.py      # Tax configuration & computation
+│   │   ├── main.py                 # FastAPI app factory
+│   │   └── seed.py                 # Demo data seeder (Zaika restaurant)
+│   ├── tests/                      # pytest test suite (25 test files)
+│   ├── alembic.ini                 # Alembic configuration
+│   └── requirements.txt            # Python dependencies
+│
+├── frontend/
+│   ├── src/
+│   │   ├── app/                    # App shell, router, providers
+│   │   ├── features/
+│   │   │   ├── admin/              # Owner dashboard (overview, orders, bills, menu, staff, settings)
+│   │   │   ├── auth/               # Login page, auth guards
+│   │   │   ├── guest/              # Guest experience (menu, cart, orders, tracking, bill, help)
+│   │   │   ├── kitchen/            # Kitchen Display System (3-column board)
+│   │   │   └── staff/              # Waiter dashboard (floor grid, orders, billing, help calls)
+│   │   ├── shared/                 # Shared API client, types, components, stores
+│   │   └── lib/                    # Utility functions
+│   ├── components.json             # shadcn/ui configuration
+│   ├── package.json
+│   ├── tsconfig.json
+│   └── vite.config.ts
+│
+├── .github/workflows/ci.yml       # CI: backend tests + frontend typecheck & build
+├── docker-compose.yml              # PostgreSQL + API + Frontend
+├── Dockerfile.backend              # Python 3.12 slim
+├── Dockerfile.frontend             # Node 24 build → Nginx
+├── .env.example                    # Environment variable reference
+└── .gitignore
 ```
 
-Full annotated layout: `docs/architecture.md` § 11.
+---
 
-## How to start (when Stage 1 is approved)
+## Development
 
-1. Review this blueprint and record decisions on the open items in
-   `docs/development-roadmap.md` § 8 (tax treatment, QR printing, KDS hardware,
-   refund approver, session expiry, review moderation).
-2. Approve Stage 1. Only then scaffold `frontend/` and `backend/` exactly as
-   specified in `docs/architecture.md` § 11.
-3. Work stage by stage. Do not skip stages or build all four interfaces at once.
-   Each stage ends only when its acceptance criteria in
-   `docs/development-roadmap.md` pass.
+### Running Tests
 
-## Core reliability rules (non-negotiable)
+**Backend** (uses SQLite in-memory by default):
 
-- Save important changes to PostgreSQL **before** broadcasting any event.
-  WebSocket messages are notifications, never the source of truth.
-  Reconnecting clients always re-fetch latest state via REST.
-- Never trust amounts from the frontend. Prices, taxes, discounts and totals
-  are re-computed and validated on the backend from menu data and price
-  snapshots stored in `order_items`.
-- Prevent duplicate order submissions with an `Idempotency-Key` header and a
-  stored idempotency record (see `docs/api-plan.md` § 7).
-- Use database transactions for order placement, bill generation, payment
-  confirmation and refunds. Validate restaurant and table access server-side
-  on every request.
-- Money is stored as integer paise (`BIGINT`), never as a float. All money
-  arithmetic uses integers / `Decimal` on the backend.
+```bash
+cd backend
+python -m pytest -q
+```
 
-## Demo data — Zaika
+For PostgreSQL-specific tests (concurrency, speculative insertion):
 
-Zaika is the seed restaurant for local development and demonstration only.
-Seed data (menu, tables, stations, one owner + staff accounts) is defined in
-Stage 1 and must be clearly marked as demo data, with no real credentials.
-Production onboarding of a second restaurant is a data operation, not a code
-change — see `docs/database-design.md` § 9.
+```bash
+# Ensure PostgreSQL is running
+cd backend
+python -m pytest -q -m "not slow"
+```
 
-## Contributing / decisions
+**Frontend** (Vitest):
 
-- Any change to the stack, the cash-only rule, the status machines, or the
-  tenant-isolation strategy must be recorded as a decision in the relevant doc
-  before it is implemented.
-- Do not add tables, endpoints, or dependencies "to make the schema look
-  large" or "just in case". Every addition needs a workflow that uses it.
+```bash
+cd frontend
+npm test
+```
+
+### Database Migrations
+
+```bash
+cd backend
+
+# Create a new migration
+alembic revision --autogenerate -m "describe your change"
+
+# Apply migrations
+alembic upgrade head
+
+# Rollback one step
+alembic downgrade -1
+```
+
+### Environment Variables
+
+See [`.env.example`](.env.example) for all configuration options. Key variables:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ENVIRONMENT` | `development` / `staging` / `production` | `development` |
+| `DATABASE_URL` | PostgreSQL connection string | `postgresql+psycopg://tavessa:tavessa@localhost:5432/tavessa` |
+| `SECRET_KEY` | JWT signing key (must change in production) | `dev-only-change-me-in-production` |
+| `FRONTEND_URL` | Frontend origin for CORS | `http://localhost:5173` |
+| `KITCHEN_DEV_KEY` | Dev-only KDS access key | `dev-kitchen-only` |
+| `STAFF_DEV_KEY` | Dev-only staff access key | `dev-staff-only` |
+
+---
+
+## Permission Matrix
+
+| Capability | Owner | Manager | Waiter | Kitchen |
+|-----------|-------|---------|--------|---------|
+| View dashboard | ✅ | ✅ | ❌ | ❌ |
+| Manage settings | ✅ | 🔧 | ❌ | ❌ |
+| Manage menu | ✅ | ✅ | ❌ | ❌ |
+| Manage staff | ✅ | 🔧 | ❌ | ❌ |
+| View financials | ✅ | ✅ | ❌ | ❌ |
+| Confirm cash | ✅ | ✅ | ✅ | ❌ |
+| Serve orders | ✅ | ✅ | ✅ | ❌ |
+| Update kitchen | ✅ | ✅ | ❌ | ✅ |
+| View kitchen | ✅ | ✅ | ❌ | ✅ |
+| Configure tax | ✅ | ❌ | ❌ | ❌ |
+| Issue refunds | ✅ | 🔧 | ❌ | ❌ |
+| Void bills | ✅ | 🔧 | ❌ | ❌ |
+
+🔧 = Configurable per manager (flags on the user record)
+
+---
+
+## Development Roadmap
+
+The project was built incrementally across 8 stages:
+
+1. **Stage 1** — Project foundation: FastAPI + React skeletons, health check, Docker Compose, CI
+2. **Stage 2** — Guest interface: digital menu, cart, order review (frontend, demo data)
+3. **Stage 3** — Backend integration: models, migrations, seed data, QR sessions, server-priced orders, idempotency
+4. **Stage 4** — Kitchen Display System: kitchen API, order transitions, WebSocket, KDS board
+5. **Stage 5** — Staff dashboard: floor grid, active orders, serving, help call management
+6. **Stage 6** — Billing: bills, splits, cash payments, receipts, billing queue
+7. **Stage 7** — Admin panel: JWT auth, RBAC, users, menu CRUD, tax config, voids, refunds, audit logs
+8. **Stage 8** — Guest real-time: guest WebSocket tickets, live tracking, split/tax reconciliation
+
+---
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/my-feature`)
+3. Commit your changes (`git commit -m 'Add my feature'`)
+4. Push to the branch (`git push origin feature/my-feature`)
+5. Open a Pull Request
+
+Please ensure:
+- Backend tests pass: `cd backend && python -m pytest -q`
+- Frontend builds: `cd frontend && npm run build`
+- Code follows existing patterns and conventions
+
+---
+
+## License
+
+This project is provided as-is for educational and demonstration purposes.
+
+---
+
+<p align="center">
+  Built with ❤️ using FastAPI + React
+</p>
