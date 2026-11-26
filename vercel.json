@@ -1,0 +1,25 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "destination": "https://tavessa-api.onrender.com/api/:path*",
+      "source": "/api/:path*"
+    },
+    {
+      "destination": "https://tavessa-api.onrender.com/ws/guest",
+      "source": "/ws/guest"
+    },
+    {
+      "destination": "https://tavessa-api.onrender.com/ws/kitchen",
+      "source": "/ws/kitchen"
+    },
+    {
+      "destination": "https://tavessa-api.onrender.com/ws/staff",
+      "source": "/ws/staff"
+    },
+    {
+      "destination": "/index.html",
+      "source": "/(.*)"
+    }
+  ]
+}

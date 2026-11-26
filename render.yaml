@@ -1,0 +1,92 @@
+# Tavessa — Render Blueprint (Stage 10.1: deployment configuration ONLY)
+#
+# Applying this file creates the backend web service and the PostgreSQL
+# database. It deploys NOTHING by itself beyond what Render does when the
+# Blueprint is created in the dashboard — see docs/deployment.md.
+#
+# Every key used here was verified against the official Render Blueprint
+# YAML Reference (https://render.com/docs/yaml-spec, read 2026-11-26).
+# No invented properties.
+#
+# Architecture: Vercel (frontend, default *.vercel.app) -> this Render
+# web service (FastAPI) -> this Render PostgreSQL. The browser never
+# talks to Render directly: Vercel reverse-proxies /api/* and /ws/*
+# (see vercel.json), so browser requests are same-origin and the
+# existing HttpOnly SameSite=Lax refresh cookie works unchanged.
+# No custom domains.
+
+services:
+  - type: web
+    name: tavessa-api
+    runtime: python
+    region: oregon
+    # Free plan: $0, but the service sleeps after ~15 min idle (first
+    # request after a pause is slow) and has 750 instance-hours/month.
+    # Upgrading to a paid plan is a dashboard decision, not a file change.
+    plan: free
+    branch: main
+    # The backend lives in backend/; the repo root holds the frontend.
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    # Exactly $PORT — never hardcode 8000. One uvicorn worker (the
+    # default): the in-memory ConnectionManager requires exactly one
+    # process, so no --workers flag. --proxy-headers is deliberately
+    # NOT added here (see docs/deployment.md § "Known limitations").
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/v1/health
+    # Exactly one instance — hard requirement: all WebSocket
+    # subscriptions and version counters live in one process's memory
+    # (backend/app/realtime/manager.py). A second instance would
+    # silently break live event delivery.
+    numInstances: 1
+    envVars:
+      # Pin the Python runtime: the repo requires >= 3.12 and dev runs
+      # 3.12.3; without this Render would use its own default. Render
+      # requires the FULL major.minor.patch version for PYTHON_VERSION
+      # (a bare "3.12" is not accepted), so the dev patch version is
+      # pinned exactly. If Render ever drops 3.12.3, the build fails
+      # loudly at version resolution — pick a newer 3.12.x then.
+      - key: PYTHON_VERSION
+        value: "3.12.3"
+      # Production security posture: /docs off, dev keys refused,
+      # Secure refresh cookie. Defaults to "development" if unset,
+      # which would silently run insecure prod — so this is explicit.
+      - key: ENVIRONMENT
+        value: production
+      # NEVER put a real secret in this file. sync: false makes Render
+      # prompt for the value when the Blueprint is first applied in
+      # the dashboard. Generate it with:
+      #   python -c "import secrets; print(secrets.token_urlsafe(48))"
+      - key: SECRET_KEY
+        sync: false
+      # Internal (private-network) connection string, format
+      # postgresql://user:password@host:port/database. The app rewrites
+      # the bare scheme to postgresql+psycopg:// itself
+      # (backend/app/db/session.py: normalise_database_url), so the
+      # reference works as-is. No SSL mode is needed on the private
+      # network and none is added.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: tavessa-db
+          property: connectionString
+      # CORS_ORIGINS is deliberately NOT set here: its correct value is
+      # the exact Vercel origin (https://<project>.vercel.app), which
+      # does not exist until the Vercel project is created. Same-origin
+      # proxied calls do not trigger CORS at all, so the deployment
+      # does not depend on it. Set it in the Render dashboard after
+      # the Vercel project exists; Blueprint syncs preserve it.
+
+databases:
+  - name: tavessa-db
+    region: oregon
+    # Free plan: $0, 1 GB disk, but a free Render PostgreSQL instance
+    # is deleted after 30 days unless upgraded to a paid plan. For a
+    # lasting deployment, upgrade in the dashboard (paid plans also
+    # add daily backups). Upgrading is a dashboard decision.
+    plan: free
+    # PostgreSQL 16 — matches the version used in local development
+    # and docker-compose. If omitted, Render would use its newest
+    # supported version (currently 18).
+    postgresMajorVersion: "16"
+    databaseName: tavessa
+    user: tavessa
