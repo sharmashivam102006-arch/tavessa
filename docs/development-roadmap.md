@@ -1238,6 +1238,19 @@ pass.
    mentioning D5 were left alone (not guest-facing).
 4. **CI.** No hosted CI verification is claimed: the three GitHub Actions
    jobs run on push after Shivam pushes; they had not run at closure time.
+5. **Flaky void test fixed (26 Nov 2026, follow-up commit on top of
+   `560eeff`).** `test_void_unpaid_ok_and_items_billable_again` failed
+   once in 4 full runs (`assert 5782 == 5390`). The stale "Table 5"
+   comment was wrong — the test already used a fresh table. Real cause:
+   the tax test leaves an 18% config effective now + 1s, and the void
+   test straddled that boundary (first bill 10%, second 18%). Fix:
+   the void test pins a 10% config effective now before billing, and
+   the tax test's future config moved from now + 1s to now + 1 day
+   (the frozen-bill assertion does not depend on it ever becoming
+   effective). No assertion weakened, no production code changed.
+   Sibling check: no other test has a near-future effective-time
+   bomb (only far-future or effective-now configs, and past-time
+   setups that cannot flip).
 
 ---
 
@@ -1265,6 +1278,15 @@ follow — and a demo Zaika can actually run.
 - [ ] Final README update: status, how to run locally, how to run the demo,
   known limitations (the open decisions that remain open, the Redis trigger,
   the RLS decision).
+- [ ] Cross-site refresh-cookie verification (REQUIRED before calling
+  deployment done — Stage 9 closure decision 6): with the frontend on
+  Vercel and the API on Render (different origins), confirm live that
+  the `SameSite=Lax` refresh cookie is sent on API calls — the
+  boot-time silent refresh and refresh-on-401 must restore a session
+  after a reload on the deployed origins, not just locally. If it
+  answers 401 cross-site, do NOT silently switch to `SameSite=None;
+  Secure` or otherwise weaken the cookie: that needs an explicit
+  security review first. See `architecture.md` §9.
 - [ ] Demo run: a full service on the deployed build (or the Compose stack
   on a laptop in the restaurant) — guest phone, KDS screen, staff tablet,
   owner dashboard — with a real cash payment and a reconciled till.

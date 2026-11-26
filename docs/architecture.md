@@ -523,6 +523,23 @@ v1.
   and the victim is logged out (a nuisance, not a takeover). The
   reasoning is recorded in `frontend/src/shared/api/client.ts` and
   `backend/app/auth/router.py`.
+- Cross-site refresh cookie — DEPLOYMENT VERIFICATION REQUIREMENT
+  (Stage 9 closure follow-up, decision 6; verify live in Stage 10,
+  do not change the cookie to satisfy it without an explicit
+  security review). The refresh cookie `tavessa_refresh` is
+  `HttpOnly`, `SameSite=Lax`, `Secure` only in production, `Path`
+  `/api/v1/auth` (`backend/app/auth/router.py`, `_refresh_cookie_kwargs`).
+  SameSite=Lax cookies are withheld on cross-site `fetch`/XHR, so
+  when the frontend (Vercel) and the API (Render) run on different
+  origins the browser will NOT attach the cookie to API calls from
+  the deployed frontend — the boot-time silent refresh and the
+  refresh-on-401 path will answer 401 against the deployed origins
+  until this is verified live (the frontend sends
+  `credentials: "include"`, which is necessary but not sufficient
+  under Lax). Any move to `SameSite=None; Secure` or any other
+  weakening of the cookie requires an explicit security review
+  first. Locally this does not arise: frontend and API share one
+  origin (or the dev proxy), so the cookie is same-site.
 - Login is rate-limited (10/min/IP, slowapi) and returns a generic 401
   for wrong credentials and for deactivated accounts alike. The first
   owner is created only via the bootstrap CLI (`python -m

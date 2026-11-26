@@ -590,8 +590,14 @@ def test_tax_unconfigured_then_configured_then_frozen(client, db_session, owner)
     assert frozen["taxModeSnapshot"] == "exclusive"
     assert frozen["taxLabelSnapshot"] == "GST"
     # Change the config again: the frozen bill must not move.
-    later = datetime.now(timezone.utc) + timedelta(seconds=1)
-    client.post(
+    # The new config is scheduled a day out on purpose. It used to
+    # be now + 1 second, which made it flip effective mid-way through
+    # whatever test ran next — the void test straddled it (first bill
+    # 10% = 5390, second bill 18% = 5782). A frozen bill never
+    # recomputes, so the far-future value preserves this test's
+    # intent while never becoming effective during the suite.
+    later = datetime.now(timezone.utc) + timedelta(days=1)
+    changed = client.post(
         "/api/v1/admin/settings/tax",
         json={
             "enabled": True, "rateBps": 1800, "mode": "exclusive",
@@ -599,6 +605,7 @@ def test_tax_unconfigured_then_configured_then_frozen(client, db_session, owner)
         },
         headers=h,
     )
+    assert changed.status_code == 201, changed.text
     again = client.get(f"/api/v1/admin/bills/{bill['id']}", headers=h)
     assert again.json()["data"]["totalPaise"] == frozen["totalPaise"]
     assert again.json()["data"]["taxPaise"] == frozen["taxPaise"]
@@ -624,11 +631,32 @@ def test_tax_past_effective_date_rejected_and_manager_forbidden(client, db_sessi
 # ----------------------------------------------------------------------
 
 def test_void_unpaid_ok_and_items_billable_again(client, db_session, owner):
-    # Fresh table: Table 5's session may still hold an open bill
-    # from an earlier test in this shared-DB suite.
+    # Tax isolation (Stage 9 closure follow-up): bills recompute tax
+    # from the config effective NOW on every regeneration, so this
+    # test's two bills are equal only if no config flips between
+    # them. An earlier test in this file leaves an 18% config
+    # effective 1 second after it is created, and this test used to
+    # straddle that boundary — first bill 10% (subtotal 4900, total
+    # 5390), second bill 18% (total 5782) — a flake (1 failure in 4
+    # full runs). Pin a 10% config effective NOW first: its
+    # effective_from is later than every earlier row's, so it wins
+    # for both bills whatever the ambient tax state is. (The stale
+    # "Table 5" comment this replaces was wrong — the test already
+    # uses fresh_table_token, a brand-new table; Table 5 state was
+    # never the cause.)
+    h = _auth_headers(client)
+    pinned = client.post(
+        "/api/v1/admin/settings/tax",
+        json={
+            "enabled": True, "rateBps": 1000, "mode": "exclusive",
+            "label": "GST",
+            "effectiveFrom": datetime.now(timezone.utc).isoformat(),
+        },
+        headers=h,
+    )
+    assert pinned.status_code == 201, pinned.text
     token = fresh_table_token(db_session)
     bill = _bill(client, db_session, token)
-    h = _auth_headers(client)
     voided = client.post(
         f"/api/v1/admin/bills/{bill['id']}/void",
         json={"reason": "guest left"},
