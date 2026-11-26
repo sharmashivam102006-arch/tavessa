@@ -4,14 +4,20 @@
 > `render.yaml`, and this guide. It deploys nothing and creates no cloud
 > resources. Everything below that happens in a dashboard is marked
 > **(dashboard)**; everything else is already committed in this repo.
+>
+> **Stage 10.2 validation updates (2026-11-26):** WebSocket architecture
+> decided as direct-to-Render (§6); database init corrected for the free
+> plan — no Render Shell (§7); `PYTHON_VERSION` corrected to `"3.12.3"`
+> (§4); paid-plan backup wording corrected (§2).
 
 ## 1. Architecture
 
 ```
 Browser ──HTTPS──> Vercel (frontend, https://<project>.vercel.app)
                        │  /api/*  ──rewrite──> Render (FastAPI)
-                       │  /ws/*   ──rewrite──> Render (FastAPI)
                        │  /*       ──SPA fallback──> /index.html
+Browser ──WSS───> Render (FastAPI) directly, /ws/* (Stage 10.2 decision;
+                       ticket auth, no cookies — see §6)
 Render tavessa-api ──private network──> Render PostgreSQL (tavessa-db)
 ```
 
@@ -19,12 +25,18 @@ Render tavessa-api ──private network──> Render PostgreSQL (tavessa-db)
 - **Backend:** Render Web Service `tavessa-api`, native Python (not Docker),
   `https://tavessa-api.onrender.com`, exactly **one instance**.
 - **Database:** Render PostgreSQL 16, same region (`oregon`) as the backend.
-- The browser talks **only to the Vercel origin**. Vercel reverse-proxies
-  `/api/*` and `/ws/*` to Render, so browser requests are same-origin and
-  the existing refresh cookie (`HttpOnly`, `Secure` in production,
-  `SameSite=Lax`, `Path /api/v1/auth`) works with **zero auth/cookie
-  changes**. The backend stays directly reachable at its Render URL too;
-  auth still applies to direct calls.
+- The browser talks to the **Vercel origin for REST** and **directly to
+  Render for WebSockets**. Vercel reverse-proxies `/api/*` to Render, so
+  REST requests are same-origin and the existing refresh cookie
+  (`HttpOnly`, `Secure` in production, `SameSite=Lax`,
+  `Path /api/v1/auth`) works with **zero auth/cookie changes**. WebSockets
+  connect straight to `wss://tavessa-api.onrender.com/ws/...` using the
+  existing single-use ticket flow (Stage 10.2 decision — Vercel's official
+  docs do not establish WebSocket proxying through external rewrites; see
+  §6). The `/ws/*` rewrite rules still present in `vercel.json` are an
+  unproven experiment, to be removed in Stage 10.3. The backend stays
+  directly reachable at its Render URL too; auth still applies to direct
+  calls.
 
 ## 2. Create the Render Blueprint (dashboard)
 
@@ -52,8 +64,17 @@ Render tavessa-api ──private network──> Render PostgreSQL (tavessa-db)
 - Free web service: sleeps after ~15 min idle — the first request after
   a pause is slow. Wake it a minute before any demo or test.
 - Free PostgreSQL: **deleted after 30 days** unless upgraded to a paid
-  plan (paid plans also add daily backups). For a lasting deployment,
+  plan. Paid plans add continuous point-in-time recovery (restore window
+  depends on the workspace plan: 3 days on Hobby, 7 days on Pro) plus
+  on-demand logical exports retained 7 days. There is no scheduled
+  "daily backup" in Render's current docs. For a lasting deployment,
   upgrade the database in the dashboard.
+- **Before applying: check the workspace.** Only **one** free Render
+  PostgreSQL can exist per workspace, and the 750 free instance-hours
+  per month are shared across all free services in the workspace. If
+  another project's free database or backend already lives in this
+  workspace, the Blueprint apply may fail (database) or the hours may
+  run out (services). Confirm in the Render dashboard first.
 - To upgrade either, change the plan in the dashboard; no repo change
   is needed.
 
@@ -65,13 +86,16 @@ Render tavessa-api ──private network──> Render PostgreSQL (tavessa-db)
    the repo root — without this the build fails). Framework preset:
    **Vite** (auto-detected from `frontend/package.json`); build command
    `npm run build` (`tsc -b && vite build`); output directory `dist`.
-3. **Environment variables: set none for the API.** Leave `VITE_API_URL`
-   **unset/empty** in the Vercel project. The frontend then uses
-   relative URLs (`/api/...`, `/ws/...`) that hit the Vercel origin and
-   are proxied to Render. Do **not** set `VITE_API_URL` to the Render
-   URL — that would make browser requests cross-origin and break the
-   refresh cookie. `VITE_API_URL` is baked in at build time, so an
-   empty value also means a future domain change needs no rebuild.
+3. **Environment variables.** Leave `VITE_API_URL` **unset/empty** in the
+   Vercel project. The frontend then uses relative URLs (`/api/...`)
+   that hit the Vercel origin and are proxied to Render. Do **not** set
+   `VITE_API_URL` to the Render URL — that would make browser requests
+   cross-origin and break the refresh cookie. `VITE_API_URL` is baked in
+   at build time, so an empty value also means a future domain change
+   needs no rebuild. Set `VITE_WS_URL=wss://tavessa-api.onrender.com`
+   in the Vercel project **after Stage 10.3** (the frontend does not read
+   it yet — it is implemented in that stage); until then, WebSockets
+   have no working production path.
 4. Deploy. Vercel reads `vercel.json` from the repo root at deploy time.
 5. Note the assigned URL, e.g. `https://tavessa-abc123.vercel.app`.
 
@@ -82,9 +106,10 @@ Render tavessa-api ──private network──> Render PostgreSQL (tavessa-db)
 | `ENVIRONMENT` | `render.yaml` (`value: production`) | Committed. Production posture: `/docs` off, dev keys refused, Secure cookie. |
 | `SECRET_KEY` | Render dashboard prompt (`sync: false`) | Owner-generated, see §2. Never in the repo. The app refuses to boot in production with the shipped dev default. |
 | `DATABASE_URL` | `render.yaml` (`fromDatabase: tavessa-db / connectionString`) | Render injects the private-network URL. The app rewrites bare `postgresql://` to `postgresql+psycopg://` itself (`backend/app/db/session.py`). No SSL mode needed on the private network. |
-| `PYTHON_VERSION` | `render.yaml` (`value: "3.12"`) | Committed. Pins the runtime the repo requires (`>= 3.12`). |
+| `PYTHON_VERSION` | `render.yaml` (`value: "3.12.3"`) | Committed. Pins the runtime the repo requires (`>= 3.12`). Render requires the full `major.minor.patch` version for this variable. |
 | `CORS_ORIGINS` | **Render dashboard, after §3** | **Not in `render.yaml`.** Correct value: the exact Vercel origin from step 3.5, e.g. `https://tavessa-abc123.vercel.app`. Same-origin proxied calls never trigger CORS, so the deployment does not depend on this being set first — it only matters for direct browser calls to the Render host. Never use `*` with credentials. |
 | `VITE_API_URL` | Vercel project | **Leave unset/empty** (see §3.3). |
+| `VITE_WS_URL` | Vercel project | **Set to `wss://tavessa-api.onrender.com` after Stage 10.3** (see §3.3 and §6). The frontend does not read it yet. |
 | `FRONTEND_URL`, `BACKEND_URL` | — (not set) | Not used by the backend for CORS or routing (`FRONTEND_URL` is only used by the local demo-token script to print QR URLs; `BACKEND_URL` is unused). Omitted deliberately. |
 | `TAVESSA_ALLOW_SQLITE`, dev keys, demo passwords | — (never set) | Must never exist in production. |
 
@@ -94,12 +119,15 @@ Render tavessa-api ──private network──> Render PostgreSQL (tavessa-db)
 
 1. `/api/:path*` → `https://tavessa-api.onrender.com/api/:path*`
    (full path and query string preserved)
-2. `/ws/guest`, `/ws/kitchen`, `/ws/staff` → the matching Render endpoints
+2. `/ws/guest`, `/ws/kitchen`, `/ws/staff` → the matching Render
+   endpoints — **unproven experiment, to be removed in Stage 10.3**
+   (see §6). WebSockets connect directly to Render instead.
 3. `/(.*)` → `/index.html` (SPA fallback — see §6)
 
-Vercel applies the first matching rewrite, so the API/WS rules take
-precedence over the fallback. There are no redirects: the browser URL
-never changes to the Render hostname.
+Vercel applies the first matching rewrite, so the API rule takes
+precedence over the fallback (the WS rules are inert unless the proxy
+carries upgrades — see §6). There are no redirects: the browser URL
+never changes to the Render hostname for REST calls.
 
 **Evidence (VERIFIED FACT, official Vercel docs):**
 - https://vercel.com/docs/routing/rewrites — "Rewrites to external origins
@@ -120,48 +148,45 @@ responses (Vercel honors upstream cache headers on external rewrites).
 Vercel forwards `x-real-ip` / `x-forwarded-for` to the origin — see
 "Known limitations" for why that matters.
 
-## 6. How WebSocket proxying works — and its verified limitations
+## 6. How WebSockets work — direct to Render (Stage 10.2 decision)
 
-The three sockets (`/ws/guest`, `/ws/kitchen`, `/ws/staff`) are proxied
-by the same `vercel.json` rewrites. The frontend builds WS URLs from
-`VITE_API_URL`, falling back to `window.location.origin` when it is
-empty (`frontend/src/features/{guest,kitchen,staff}/lib/*.ts`), so with
-`VITE_API_URL` unset the browser connects to
-`wss://<project>.vercel.app/ws/<channel>?ticket=...` — same-origin,
-ticket in the query string (browsers cannot set headers on a WS
-handshake). WS auth uses single-use 60-second tickets, not cookies,
-so the cookie question does not apply to the sockets.
+**Decision (Stage 10.2): WebSockets connect directly to Render. REST
+stays proxied through Vercel. Do not rely on the Vercel proxy for
+real-time.**
 
-**Status: UNVERIFIED — do not claim real-time works until the live test
-below passes.**
-
-- Vercel's official documentation never documents WebSocket upgrades
-  through rewrites to an external origin: the word "websocket" appears
-  nowhere in the `vercel.json` reference (3,774 lines) nor on the
-  "Rewrites on Vercel" guide. Vercel's only documented WebSocket
-  capability is Vercel Functions with Fluid Compute
-  (https://vercel.com/docs/frameworks/backend — "Vercel Functions can
-  serve WebSocket connections when Fluid compute is enabled"), which is
-  a different mechanism from proxying to an external backend.
+- Vercel's official documentation does not establish WebSocket proxying
+  through external rewrites: the word "websocket" appears nowhere in
+  the `vercel.json` reference (3,774 lines) nor on the "Rewrites on
+  Vercel" guide. Vercel's only documented WebSocket capability is
+  serving sockets inside a Vercel Function with Fluid Compute
+  (https://vercel.com/docs/functions/websockets) — a different
+  mechanism from proxying to an external backend, and one that caps
+  connections at the Function maximum duration (300 s on Hobby) and
+  forbids in-memory state.
 - The strongest explicit statement found is from Convex's docs
   (https://docs.convex.dev/production/abuse-protection): "Vercel rewrites
-  proxy HTTP requests, not WebSocket connections." Community reports
-  conflict (one user: "Rewrites do [capture websocket traffic]";
-  another: "rewrites don't seem to be proxying WS protocol").
-- **Live test required after deployment:** on the deployed Vercel URL,
-  open the guest tracking page and the kitchen board with a live order
-  and confirm WS events flow (order appears on the KDS without a
-  refresh; guest tracking updates). In devtools, confirm the WS
-  handshake to `wss://<project>.vercel.app/ws/...` returns **101**
-  and frames flow. If the handshake fails, stop: real-time is **not**
-  deployment-ready through the proxy.
-- **Fallback if the proxy cannot carry WS (not implemented in this
-  stage):** a minimal frontend change — a separate `VITE_WS_URL`
-  pointing at `wss://tavessa-api.onrender.com` — so sockets connect
-  directly to Render. That works because WS auth is ticket-based, not
-  cookie-based; only the REST refresh cookie needed same-origin. This
-  fallback needs its own decision and tests; it is recorded here so
-  the deployment is not dead-ended, not built.
+  proxy HTTP requests, not WebSocket connections."
+- The three `/ws/*` rewrite rules still present in `vercel.json` are
+  therefore an **unproven experiment, not the plan** — they are removed
+  in Stage 10.3. Do not claim real-time works through the proxy.
+
+**How the decided path works:** after Stage 10.3, the frontend reads
+`VITE_WS_URL` (set to `wss://tavessa-api.onrender.com` in the Vercel
+project) and connects straight to Render:
+`wss://tavessa-api.onrender.com/ws/<channel>?ticket=...`. WS auth uses
+single-use 60-second tickets, not cookies, so the cookie question does
+not apply to the sockets — no backend, auth, or cookie change is
+needed. CORS does not gate WebSocket handshakes in this implementation
+(no `Origin` check in the WS path), so no CORS change is needed either.
+Ticket issuance stays on same-origin REST.
+
+**Live test required after deployment:** from the deployed Vercel URL,
+open the guest tracking page and the kitchen board with a live order
+and confirm WS events flow (order appears on the KDS without a
+refresh; guest tracking updates). In devtools, confirm the WS
+handshake to `wss://tavessa-api.onrender.com/ws/...` returns **101**
+and frames flow. If the handshake fails, stop: real-time is **not**
+deployment-ready.
 
 The SPA fallback (`/(.*)` → `/index.html`) makes direct navigation and
 refresh work for `/`, `/login`, `/t/:tableToken`, `/staff`, `/kitchen`,
@@ -169,24 +194,42 @@ refresh work for `/`, `/login`, `/t/:tableToken`, `/staff`, `/kitchen`,
 come first, and static assets are served from the filesystem before
 rewrites are evaluated.
 
-## 7. Initialise the production database (Render Shell)
+## 7. Initialise the production database
 
-Run in the Render dashboard's **Shell** for the `tavessa-api` service
-(or any shell with the service's environment), from `backend/`.
-**In this exact order — do not skip or reorder:**
+**Render Shell is NOT available on the free plan** (Shell and one-off
+jobs are paid-plan features), so the commands below cannot be run in
+the dashboard on `plan: free`. Use one of these two supported methods,
+from `backend/` in a local checkout, **in this exact order — do not
+skip or reorder:**
+
+- **Method A (recommended on the free plan): run locally against the
+  external database URL.** In the Render dashboard, copy the database's
+  **external** connection string and set it as `DATABASE_URL` in your
+  local shell. The external URL **must** carry `?sslmode=require`
+  (the app has no SSL handling in code; the internal private-network
+  URL needs none). You need a local Python environment with the
+  backend dependencies installed (`pip install -r requirements.txt`).
+- **Method B: temporarily upgrade the web service to a paid plan,**
+  use the dashboard Shell, then downgrade. Cleanest operationally
+  (runs in the service's own environment), but costs a paid month
+  (pro-rated) and needs a dashboard plan change in both directions.
 
 1. **Migrations** (creates all tables; current head `c8d3e5f6a7b8`):
    `alembic upgrade head`
    Verify: `alembic current` shows `c8d3e5f6a7b8 (head)`. Never run
    `alembic downgrade` on production — roll back by restoring a
    database backup instead.
-2. **Seed Zaika** (demo restaurant, 10 tables, menu, QR tokens;
-   idempotent — upserts by natural key, safe to re-run):
+2. **Seed Zaika** (demo restaurant, 10 tables, menu; idempotent by
+   natural key — re-running it creates no duplicates, but it
+   **overwrites admin-edited menu data** (prices, availability, names)
+   for seeded items, so **never re-run it after the owner edits the
+   menu**; it creates no QR tokens — generate a demo token separately
+   with `python -m app.seed.demo_tokens --table 5`):
    `python -m app.seed`
 3. **Bootstrap the owner** (CLI-only, no public registration exists;
    refuses if an owner already exists; password is prompted twice
    via `getpass` and never appears in shell history):
-   `python -m app.auth.bootstrap --email <owner email>`
+   `python -m app.auth.bootstrap --restaurant-slug zaika --email <owner email>`
 4. **Start using the app.** The API boots cleanly against an
    unmigrated/empty database and fails per-request, so do not treat
    "the service is up" as "the database is ready" — run the steps
@@ -253,8 +296,10 @@ cookie settings. **Do not claim login works until this passes:**
   (`guestSocket.ts:buildGuestWsUrl`, `kitchen.ts:buildKitchenWsUrl`,
   `staff.ts:buildStaffWsUrl`) convert `VITE_API_URL` from `http(s)` to
   `ws(s)` when set, and fall back to `window.location.origin` when it
-  is empty — so with `VITE_API_URL` unset the sockets also connect
-  same-origin through the proxy. No code change needed.
+  is empty — so with `VITE_API_URL` unset the sockets connect
+  same-origin through the proxy. That path is now **superseded by the
+  Stage 10.2 decision** (direct-to-Render sockets via a new `VITE_WS_URL`,
+  implemented in Stage 10.3); no code change was needed in Stage 10.1.
 - **Backend:** entrypoint `app.main:app`, routers already mount
   `/api/v1/*` and `/ws/*` (`backend/app/main.py`); the start command
   uses `$PORT` as Render requires; `DATABASE_URL` from Render's
@@ -265,8 +310,13 @@ cookie settings. **Do not claim login works until this passes:**
 
 ## Known limitations (carried from the Stage 10.0 audit)
 
-- **WebSocket proxying is UNVERIFIED** (see §6) — the single most
-  important open item for this deployment.
+- **WebSocket architecture decided in Stage 10.2, not yet implemented**
+  (see §6): sockets connect directly to Render via a new `VITE_WS_URL`
+  (Stage 10.3). The `/ws/*` rewrite rules in `vercel.json` are an
+  unproven experiment — Vercel's official docs do not establish external
+  WebSocket proxying, and Convex's docs state rewrites proxy HTTP, not
+  WebSockets. Do not claim real-time works until the live 101-handshake
+  test passes.
 - **Rate limiting sees the proxy's IP, not the user's.** The limiter
   keys on `request.client.host` (slowapi `get_remote_address`) and the
   repo has no `--proxy-headers` anywhere, so behind the Vercel proxy
