@@ -85,4 +85,63 @@ describe("buildKitchenWsUrl", () => {
       }),
     ).toBe("ws://api.example.com/ws/kitchen?restaurant_id=r-1&dev_key=k");
   });
+
+  it("uses a configured wsBase directly (production: Render)", () => {
+    expect(
+      buildKitchenWsUrl({
+        apiBase: "",
+        wsBase: "wss://tavessa-api.onrender.com",
+        pageOrigin: "https://tavessa-abc123.vercel.app",
+        restaurantId: "r-1",
+        ticket: "ticket-9",
+      }),
+    ).toBe(
+      "wss://tavessa-api.onrender.com/ws/kitchen?restaurant_id=r-1&ticket=ticket-9",
+    );
+  });
+
+  it("converts an https wsBase to wss and an http wsBase to ws", () => {
+    expect(
+      buildKitchenWsUrl({
+        apiBase: "",
+        wsBase: "https://tavessa-api.onrender.com/",
+        pageOrigin: "https://tavessa-abc123.vercel.app",
+        restaurantId: "r-1",
+        ticket: "t",
+      }),
+    ).toBe("wss://tavessa-api.onrender.com/ws/kitchen?restaurant_id=r-1&ticket=t");
+    expect(
+      buildKitchenWsUrl({
+        apiBase: "",
+        wsBase: "http://localhost:8000",
+        pageOrigin: "http://localhost:5173",
+        restaurantId: "r-1",
+        devKey: "k",
+      }),
+    ).toBe("ws://localhost:8000/ws/kitchen?restaurant_id=r-1&dev_key=k");
+  });
+
+  it("prefers wsBase over apiBase and strips a trailing slash", () => {
+    expect(
+      buildKitchenWsUrl({
+        apiBase: "https://api.example.com",
+        wsBase: "wss://tavessa-api.onrender.com/",
+        pageOrigin: "https://tavessa-abc123.vercel.app",
+        restaurantId: "r-1",
+        ticket: "t",
+      }),
+    ).toBe("wss://tavessa-api.onrender.com/ws/kitchen?restaurant_id=r-1&ticket=t");
+  });
+
+  it("falls back to apiBase when wsBase is empty", () => {
+    expect(
+      buildKitchenWsUrl({
+        apiBase: "https://api.example.com",
+        wsBase: "",
+        pageOrigin: "https://example.com",
+        restaurantId: "r-1",
+        devKey: "k",
+      }),
+    ).toBe("wss://api.example.com/ws/kitchen?restaurant_id=r-1&dev_key=k");
+  });
 });

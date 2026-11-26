@@ -6,9 +6,13 @@
  *   lock-step (api-plan.md § 9.4, Stage 8 decision 3).
  * - `buildGuestWsUrl`: the /ws/guest URL. In dev the Vite proxy
  *   serves /ws from the page origin; in production VITE_API_URL is
- *   converted http(s) -> ws(s). The single-use ticket travels as a
- *   query param because browsers cannot set headers on a WS
- *   handshake. The ticket is never logged.
+ *   converted http(s) -> ws(s). When VITE_WS_URL is set it takes
+ *   precedence: the socket connects directly to that host
+ *   (production: wss://tavessa-api.onrender.com) instead of through
+ *   the Vercel proxy — Stage 10.2 decision, see docs/deployment.md
+ *   §6. The single-use ticket travels as a query param because
+ *   browsers cannot set headers on a WS handshake. The ticket is
+ *   never logged.
  */
 
 export function nextGuestBackoffDelayMs(attempt: number): number {
@@ -24,12 +28,18 @@ export function buildGuestWsUrl(options: {
   pageOrigin: string;
   /** Single-use Stage 8 ticket from POST /guest/ws/tickets. */
   ticket: string;
+  /** Optional VITE_WS_URL. When set, the socket connects directly
+   * to this host (production: wss://tavessa-api.onrender.com) and
+   * takes precedence over apiBase; when empty, the existing
+   * same-origin fallback applies (local dev). */
+  wsBase?: string;
 }): string {
   const params = new URLSearchParams({ ticket: options.ticket });
   const path = `/ws/guest?${params}`;
-  if (options.apiBase) {
-    const base = options.apiBase.replace(/^http/, "ws").replace(/\/$/, "");
-    return `${base}${path}`;
+  const base = options.wsBase || options.apiBase;
+  if (base) {
+    const ws = base.replace(/^http/, "ws").replace(/\/$/, "");
+    return `${ws}${path}`;
   }
   const origin = options.pageOrigin.replace(/^http/, "ws");
   return `${origin}${path}`;

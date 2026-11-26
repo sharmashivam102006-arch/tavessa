@@ -9,6 +9,13 @@
 > decided as direct-to-Render (§6); database init corrected for the free
 > plan — no Render Shell (§7); `PYTHON_VERSION` corrected to `"3.12.3"`
 > (§4); paid-plan backup wording corrected (§2).
+>
+> **Stage 10.3 implementation updates (2026-11-26):** direct-to-Render
+> WebSockets implemented — `wsBase` + `VITE_WS_URL` in the three
+> WebSocket builders/hooks, `/ws/*` rewrite rules removed from
+> `vercel.json`, `autoDeployTrigger: off` in `render.yaml` (§2);
+> `--proxy-headers` reviewed and deliberately not added (see "Known
+> limitations"). Live WebSocket verification is still pending (§6).
 
 ## 1. Architecture
 
@@ -33,10 +40,9 @@ Render tavessa-api ──private network──> Render PostgreSQL (tavessa-db)
   connect straight to `wss://tavessa-api.onrender.com/ws/...` using the
   existing single-use ticket flow (Stage 10.2 decision — Vercel's official
   docs do not establish WebSocket proxying through external rewrites; see
-  §6). The `/ws/*` rewrite rules still present in `vercel.json` are an
-  unproven experiment, to be removed in Stage 10.3. The backend stays
-  directly reachable at its Render URL too; auth still applies to direct
-  calls.
+  §6). The `/ws/*` rewrite rules were removed from `vercel.json` in
+  Stage 10.3. The backend stays directly reachable at its Render URL too;
+  auth still applies to direct calls.
 
 ## 2. Create the Render Blueprint (dashboard)
 
@@ -58,6 +64,13 @@ Render tavessa-api ──private network──> Render PostgreSQL (tavessa-db)
    when the database is unreachable, and 200 even on an unmigrated
    database — it only runs `SELECT 1`. Do not treat "health is 200"
    as "migrations have run".
+
+**Auto-deploy is off.** `render.yaml` sets `autoDeployTrigger: off`
+(Stage 10.3, verified against the official Blueprint YAML Reference),
+so pushes to `main` do not deploy by themselves. Deploy manually from
+the dashboard: the service → **Manual Deploy → Deploy latest commit**.
+If this file is ever removed from the Blueprint, the same setting lives
+in the dashboard under Settings → Build & Deploy → Auto-Deploy.
 
 **Plans (dashboard decision, not a file change).** The Blueprint pins
 `plan: free` for both resources ($0):
@@ -90,12 +103,14 @@ Render tavessa-api ──private network──> Render PostgreSQL (tavessa-db)
    Vercel project. The frontend then uses relative URLs (`/api/...`)
    that hit the Vercel origin and are proxied to Render. Do **not** set
    `VITE_API_URL` to the Render URL — that would make browser requests
-   cross-origin and break the refresh cookie. `VITE_API_URL` is baked in
-   at build time, so an empty value also means a future domain change
-   needs no rebuild. Set `VITE_WS_URL=wss://tavessa-api.onrender.com`
-   in the Vercel project **after Stage 10.3** (the frontend does not read
-   it yet — it is implemented in that stage); until then, WebSockets
-   have no working production path.
+   cross-origin and break the refresh cookie. Set
+   `VITE_WS_URL=wss://tavessa-api.onrender.com` in the Vercel project
+   (Stage 10.3: the frontend reads it in the three WebSocket hooks).
+   Both are baked in at build time, so changing either requires a
+   Vercel redeploy to take effect; an empty `VITE_API_URL` also means a
+   future domain change needs no rebuild. Neither is a secret — both
+   are public configuration embedded in the frontend bundle (see
+   `frontend/.env.example`).
 4. Deploy. Vercel reads `vercel.json` from the repo root at deploy time.
 5. Note the assigned URL, e.g. `https://tavessa-abc123.vercel.app`.
 
@@ -109,7 +124,7 @@ Render tavessa-api ──private network──> Render PostgreSQL (tavessa-db)
 | `PYTHON_VERSION` | `render.yaml` (`value: "3.12.3"`) | Committed. Pins the runtime the repo requires (`>= 3.12`). Render requires the full `major.minor.patch` version for this variable. |
 | `CORS_ORIGINS` | **Render dashboard, after §3** | **Not in `render.yaml`.** Correct value: the exact Vercel origin from step 3.5, e.g. `https://tavessa-abc123.vercel.app`. Same-origin proxied calls never trigger CORS, so the deployment does not depend on this being set first — it only matters for direct browser calls to the Render host. Never use `*` with credentials. |
 | `VITE_API_URL` | Vercel project | **Leave unset/empty** (see §3.3). |
-| `VITE_WS_URL` | Vercel project | **Set to `wss://tavessa-api.onrender.com` after Stage 10.3** (see §3.3 and §6). The frontend does not read it yet. |
+| `VITE_WS_URL` | Vercel project | **Set to `wss://tavessa-api.onrender.com`** (see §3.3 and §6). Read by the three WebSocket hooks; when unset, sockets use the same-origin fallback (local dev). |
 | `FRONTEND_URL`, `BACKEND_URL` | — (not set) | Not used by the backend for CORS or routing (`FRONTEND_URL` is only used by the local demo-token script to print QR URLs; `BACKEND_URL` is unused). Omitted deliberately. |
 | `TAVESSA_ALLOW_SQLITE`, dev keys, demo passwords | — (never set) | Must never exist in production. |
 
@@ -119,15 +134,15 @@ Render tavessa-api ──private network──> Render PostgreSQL (tavessa-db)
 
 1. `/api/:path*` → `https://tavessa-api.onrender.com/api/:path*`
    (full path and query string preserved)
-2. `/ws/guest`, `/ws/kitchen`, `/ws/staff` → the matching Render
-   endpoints — **unproven experiment, to be removed in Stage 10.3**
-   (see §6). WebSockets connect directly to Render instead.
-3. `/(.*)` → `/index.html` (SPA fallback — see §6)
+2. `/(.*)` → `/index.html` (SPA fallback — see §6)
 
 Vercel applies the first matching rewrite, so the API rule takes
-precedence over the fallback (the WS rules are inert unless the proxy
-carries upgrades — see §6). There are no redirects: the browser URL
-never changes to the Render hostname for REST calls.
+precedence over the fallback. There are no redirects: the browser URL
+never changes to the Render hostname for REST calls. WebSockets do
+not go through Vercel at all — see §6. (The three `/ws/*` rewrite
+rules that were here before were removed in Stage 10.3: Vercel's
+official docs do not establish WebSocket proxying through external
+rewrites.)
 
 **Evidence (VERIFIED FACT, official Vercel docs):**
 - https://vercel.com/docs/routing/rewrites — "Rewrites to external origins
@@ -166,13 +181,13 @@ real-time.**
 - The strongest explicit statement found is from Convex's docs
   (https://docs.convex.dev/production/abuse-protection): "Vercel rewrites
   proxy HTTP requests, not WebSocket connections."
-- The three `/ws/*` rewrite rules still present in `vercel.json` are
-  therefore an **unproven experiment, not the plan** — they are removed
-  in Stage 10.3. Do not claim real-time works through the proxy.
+- The three `/ws/*` rewrite rules were removed from `vercel.json` in
+  Stage 10.3 — there is no proxy path for sockets any more. Do not
+  claim real-time works through the proxy.
 
-**How the decided path works:** after Stage 10.3, the frontend reads
-`VITE_WS_URL` (set to `wss://tavessa-api.onrender.com` in the Vercel
-project) and connects straight to Render:
+**How the decided path works:** the frontend reads `VITE_WS_URL` (set
+to `wss://tavessa-api.onrender.com` in the Vercel project) and connects
+straight to Render:
 `wss://tavessa-api.onrender.com/ws/<channel>?ticket=...`. WS auth uses
 single-use 60-second tickets, not cookies, so the cookie question does
 not apply to the sockets — no backend, auth, or cookie change is
@@ -292,14 +307,13 @@ cookie settings. **Do not claim login works until this passes:**
   (`frontend/src/shared/api/client.ts:42`). With `VITE_API_URL`
   unset, every call uses a relative URL — same-origin through the
   proxy. Dev behaviour (Vite proxy) is untouched.
-- **WebSocket:** all three URL builders
-  (`guestSocket.ts:buildGuestWsUrl`, `kitchen.ts:buildKitchenWsUrl`,
-  `staff.ts:buildStaffWsUrl`) convert `VITE_API_URL` from `http(s)` to
-  `ws(s)` when set, and fall back to `window.location.origin` when it
-  is empty — so with `VITE_API_URL` unset the sockets connect
-  same-origin through the proxy. That path is now **superseded by the
-  Stage 10.2 decision** (direct-to-Render sockets via a new `VITE_WS_URL`,
-  implemented in Stage 10.3); no code change was needed in Stage 10.1.
+- **WebSocket (Stage 10.3):** all three URL builders gained an
+  optional `wsBase` parameter (precedence: `wsBase` > `apiBase` >
+  `pageOrigin`); the three hooks read `VITE_WS_URL` and pass it as
+  `wsBase`. With `VITE_WS_URL=wss://tavessa-api.onrender.com` set in
+  Vercel, sockets connect directly to Render; with it unset, the
+  previous same-origin behaviour is preserved (local dev). The
+  `/ws/*` rewrite rules were removed from `vercel.json`.
 - **Backend:** entrypoint `app.main:app`, routers already mount
   `/api/v1/*` and `/ws/*` (`backend/app/main.py`); the start command
   uses `$PORT` as Render requires; `DATABASE_URL` from Render's
@@ -310,21 +324,30 @@ cookie settings. **Do not claim login works until this passes:**
 
 ## Known limitations (carried from the Stage 10.0 audit)
 
-- **WebSocket architecture decided in Stage 10.2, not yet implemented**
-  (see §6): sockets connect directly to Render via a new `VITE_WS_URL`
-  (Stage 10.3). The `/ws/*` rewrite rules in `vercel.json` are an
-  unproven experiment — Vercel's official docs do not establish external
+- **WebSocket architecture implemented in Stage 10.3, live verification
+  still pending** (see §6): sockets connect directly to Render via
+  `VITE_WS_URL`; the `/ws/*` rewrite rules were removed from
+  `vercel.json`. Vercel's official docs do not establish external
   WebSocket proxying, and Convex's docs state rewrites proxy HTTP, not
   WebSockets. Do not claim real-time works until the live 101-handshake
-  test passes.
+  test passes (see §6).
 - **Rate limiting sees the proxy's IP, not the user's.** The limiter
-  keys on `request.client.host` (slowapi `get_remote_address`) and the
-  repo has no `--proxy-headers` anywhere, so behind the Vercel proxy
-  (and Render's own proxy) the per-IP limits are shared across users.
-  The start command in `render.yaml` deliberately does **not** add
-  `--proxy-headers` (not approved in this stage); adding it is an
-  outstanding recommendation for the next stage. Vercel forwards
-  `x-forwarded-for`, so the flag would work once added.
+  keys on `request.client.host` (slowapi `get_remote_address`, which
+  does not read `X-Forwarded-For`), so behind the Vercel proxy (and
+  Render's own proxy) the per-IP limits are shared across users.
+  Reviewed in Stage 10.3 and deliberately NOT fixed by adding
+  `--proxy-headers`: on its own the flag is inert (uvicorn only
+  honours `X-Forwarded-For` from peers listed in
+  `--forwarded-allow-ips`, which defaults to loopback only — Render's
+  proxy is not loopback), and making it work would need
+  `--forwarded-allow-ips '*'`, which would let any client connecting
+  directly to the public Render host spoof the IP the limiter keys on
+  and evade per-IP limits. A trusted-proxy-aware fix needs its own
+  security review; the current shared-IP behaviour fails closed
+  (over-throttling under load) rather than letting an attacker evade
+  the limit. Vercel forwards `x-forwarded-for`, so the flag would
+  work once added — that is not a reason to add it without the trust
+  configuration.
 - **Free-tier behaviour:** Render web service sleeps after ~15 min
   idle; free PostgreSQL is deleted after 30 days (§2).
 - **Health check** returns HTTP 200 even on an unmigrated database

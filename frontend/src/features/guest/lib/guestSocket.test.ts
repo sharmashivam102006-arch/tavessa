@@ -71,4 +71,56 @@ describe("buildGuestWsUrl", () => {
     expect(url).toContain("ticket=a%2Fb%2Bc%3Dd");
     expect(url).not.toContain("ticket=a/b");
   });
+
+  it("uses a configured wsBase directly (production: Render)", () => {
+    expect(
+      buildGuestWsUrl({
+        apiBase: "",
+        wsBase: "wss://tavessa-api.onrender.com",
+        pageOrigin: "https://tavessa-abc123.vercel.app",
+        ticket: "t-3",
+      }),
+    ).toBe("wss://tavessa-api.onrender.com/ws/guest?ticket=t-3");
+  });
+
+  it("converts an https wsBase to wss and an http wsBase to ws", () => {
+    expect(
+      buildGuestWsUrl({
+        apiBase: "",
+        wsBase: "https://tavessa-api.onrender.com/",
+        pageOrigin: "https://tavessa-abc123.vercel.app",
+        ticket: "t-4",
+      }),
+    ).toBe("wss://tavessa-api.onrender.com/ws/guest?ticket=t-4");
+    expect(
+      buildGuestWsUrl({
+        apiBase: "",
+        wsBase: "http://localhost:8000",
+        pageOrigin: "http://localhost:5173",
+        ticket: "t-5",
+      }),
+    ).toBe("ws://localhost:8000/ws/guest?ticket=t-5");
+  });
+
+  it("prefers wsBase over apiBase and strips a trailing slash", () => {
+    expect(
+      buildGuestWsUrl({
+        apiBase: "https://api.example.com",
+        wsBase: "wss://tavessa-api.onrender.com/",
+        pageOrigin: "https://tavessa-abc123.vercel.app",
+        ticket: "t-6",
+      }),
+    ).toBe("wss://tavessa-api.onrender.com/ws/guest?ticket=t-6");
+  });
+
+  it("falls back to apiBase when wsBase is empty", () => {
+    expect(
+      buildGuestWsUrl({
+        apiBase: "https://api.example.com",
+        wsBase: "",
+        pageOrigin: "https://example.com",
+        ticket: "t-7",
+      }),
+    ).toBe("wss://api.example.com/ws/guest?ticket=t-7");
+  });
 });

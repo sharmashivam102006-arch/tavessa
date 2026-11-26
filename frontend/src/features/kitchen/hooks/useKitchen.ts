@@ -29,6 +29,12 @@ import type {
 } from "@/shared/api/types";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
+/** Optional direct-to-Render WebSocket base (production:
+ * wss://tavessa-api.onrender.com). Vite env vars are embedded in
+ * the frontend bundle at build time — this is public configuration
+ * (a hostname), never a secret. When unset, sockets use the
+ * existing same-origin fallback (local dev). */
+const WS_BASE = import.meta.env.VITE_WS_URL ?? "";
 
 export function useKitchenRestaurants() {
   return useQuery({
@@ -126,6 +132,7 @@ export function useKitchenSocket(
         if (!devKey) return;
         url = buildKitchenWsUrl({
           apiBase: API_BASE,
+          wsBase: WS_BASE,
           pageOrigin: window.location.origin,
           restaurantId,
           devKey,
@@ -136,6 +143,7 @@ export function useKitchenSocket(
           if (closed) return;
           url = buildKitchenWsUrl({
             apiBase: API_BASE,
+            wsBase: WS_BASE,
             pageOrigin: window.location.origin,
             restaurantId,
             ticket: ticket.ticket,

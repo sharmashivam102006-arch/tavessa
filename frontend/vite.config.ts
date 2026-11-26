@@ -14,9 +14,10 @@ export default defineConfig({
   server: {
     port: 5173,
     // In dev, /api and /ws are proxied to the FastAPI backend so the
-    // frontend can call relative URLs. Production serves the built
-    // frontend separately; VITE_API_URL then points at the backend
-    // (see .env.example).
+    // frontend can call relative URLs. In production VITE_API_URL is
+    // left unset (REST goes through the Vercel proxy, same-origin)
+    // and VITE_WS_URL points at the Render backend for sockets —
+    // see frontend/.env.example and docs/deployment.md §6.
     proxy: {
       '/api': 'http://localhost:8000',
       // The KDS WebSocket needs `ws: true` — the string shorthand

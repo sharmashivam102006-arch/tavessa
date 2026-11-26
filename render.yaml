@@ -9,11 +9,13 @@
 # No invented properties.
 #
 # Architecture: Vercel (frontend, default *.vercel.app) -> this Render
-# web service (FastAPI) -> this Render PostgreSQL. The browser never
-# talks to Render directly: Vercel reverse-proxies /api/* and /ws/*
-# (see vercel.json), so browser requests are same-origin and the
-# existing HttpOnly SameSite=Lax refresh cookie works unchanged.
-# No custom domains.
+# web service (FastAPI) -> this Render PostgreSQL. REST goes through
+# the Vercel proxy (/api/*, see vercel.json) so browser REST requests
+# are same-origin and the existing HttpOnly SameSite=Lax refresh
+# cookie works unchanged. WebSockets connect directly from the
+# browser to this service (wss://tavessa-api.onrender.com/ws/...,
+# VITE_WS_URL in the Vercel project) — Stage 10.2 decision, see
+# docs/deployment.md §6. No custom domains.
 
 services:
   - type: web
@@ -25,6 +27,18 @@ services:
     # Upgrading to a paid plan is a dashboard decision, not a file change.
     plan: free
     branch: main
+    # Controlled deployment: pushes to main must NOT deploy by
+    # themselves. `off` disables auto-deploys (verified against the
+    # official Blueprint YAML Reference, https://render.com/docs/yaml-spec:
+    # autoDeployTrigger is commit | checksPass | off; omitting it
+    # defaults to `commit`). Deploy manually from the dashboard
+    # (Manual Deploy -> Deploy latest commit). If this file is ever
+    # removed from the Blueprint, the same setting lives in the
+    # dashboard under Settings -> Build & Deploy -> Auto-Deploy.
+    # `off` is quoted deliberately: YAML 1.1 parsers read a bare `off`
+    # as boolean false, and the official spec example quotes it too
+    # (autoDeployTrigger: 'off').
+    autoDeployTrigger: "off"
     # The backend lives in backend/; the repo root holds the frontend.
     rootDir: backend
     buildCommand: pip install -r requirements.txt
@@ -81,8 +95,10 @@ databases:
     region: oregon
     # Free plan: $0, 1 GB disk, but a free Render PostgreSQL instance
     # is deleted after 30 days unless upgraded to a paid plan. For a
-    # lasting deployment, upgrade in the dashboard (paid plans also
-    # add daily backups). Upgrading is a dashboard decision.
+    # lasting deployment, upgrade in the dashboard (paid plans add
+    # continuous point-in-time recovery plus on-demand exports — there
+    # is no scheduled "daily backup" in Render's current docs).
+    # Upgrading is a dashboard decision.
     plan: free
     # PostgreSQL 16 — matches the version used in local development
     # and docker-compose. If omitted, Render would use its newest
