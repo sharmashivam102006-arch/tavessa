@@ -16,6 +16,11 @@
 > `vercel.json`, `autoDeployTrigger: off` in `render.yaml` (§2);
 > `--proxy-headers` reviewed and deliberately not added (see "Known
 > limitations"). Live WebSocket verification is still pending (§6).
+>
+> **Stage 10.4 fix (2026-11-26):** `vercel.json` moved from the repo root to
+> `frontend/` — Vercel only reads it from the project's Root Directory
+> (`frontend/`, next to `package.json`); the repo-root copy was ignored live
+> (both rewrites 404'd until the file moved). See §3 step 4.
 
 ## 1. Architecture
 
@@ -111,7 +116,13 @@ in the dashboard under Settings → Build & Deploy → Auto-Deploy.
    future domain change needs no rebuild. Neither is a secret — both
    are public configuration embedded in the frontend bundle (see
    `frontend/.env.example`).
-4. Deploy. Vercel reads `vercel.json` from the repo root at deploy time.
+4. Deploy. Vercel reads `frontend/vercel.json` at deploy time — it must sit
+   in the Vercel project's Root Directory (`frontend/`, next to
+   `package.json`). A copy at the repo root is ignored: on the first deploy
+   (2026-11-26) `vercel.json` was at the repo root and Vercel loaded neither
+   rewrite, so `/api/v1/health` and `/login` both returned Vercel's 404 page
+   while the homepage (a static file) loaded fine. The file was moved to
+   `frontend/` in the Stage 10.4 fix. Do not move it back to the repo root.
 5. Note the assigned URL, e.g. `https://tavessa-abc123.vercel.app`.
 
 ## 4. Environment variables
@@ -130,7 +141,7 @@ in the dashboard under Settings → Build & Deploy → Auto-Deploy.
 
 ## 5. How same-origin API proxying works
 
-`vercel.json` (committed) rewrites, in order:
+`frontend/vercel.json` (committed) rewrites, in order:
 
 1. `/api/:path*` → `https://tavessa-api.onrender.com/api/:path*`
    (full path and query string preserved)
@@ -291,7 +302,7 @@ cookie settings. **Do not claim login works until this passes:**
 
 ## 10. What this stage does and does not do
 
-- **Does:** commit `vercel.json`, `render.yaml`, and this guide.
+- **Does:** commit `frontend/vercel.json`, `render.yaml`, and this guide.
   Nothing else in the repo changes: no auth, cookie, JWT, CSRF,
   database-model, migration, business-logic, API-contract, or UI
   change was needed (verified — see §11).
