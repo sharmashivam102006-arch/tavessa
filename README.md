@@ -4,9 +4,12 @@
     <strong>A full-stack restaurant management platform — QR ordering, kitchen display, staff dashboard, billing & admin panel.</strong>
   </p>
   <p align="center">
+    <a href="#live-demo">Live Demo</a> •
+    <a href="#v100--demo-release">v1.0.0 Release</a> •
     <a href="#features">Features</a> •
     <a href="#tech-stack">Tech Stack</a> •
     <a href="#architecture">Architecture</a> •
+    <a href="#limits-of-this-demo">Limits of Demo</a> •
     <a href="#quick-start">Quick Start</a> •
     <a href="#api-reference">API Reference</a> •
     <a href="#project-structure">Project Structure</a> •
@@ -16,11 +19,31 @@
 
 ---
 
+## Live Demo
+
+- **Frontend (Live App):** [https://tavessa.vercel.app/](https://tavessa.vercel.app/) (hosted on Vercel)
+- **API Health:** [https://tavessa-api.onrender.com/api/v1/health](https://tavessa-api.onrender.com/api/v1/health) (hosted on Render; returns `{"status":"ok","database":"ok","environment":"production","version":"0.1.0"}`)
+- **v1.0.0 Release:** [https://github.com/sharmashivam102006-arch/tavessa/releases/tag/v1.0.0](https://github.com/sharmashivam102006-arch/tavessa/releases/tag/v1.0.0)
+- **Deployment Guide:** [docs/deployment.md](docs/deployment.md)
+
+---
+
+## v1.0.0 — Demo Release
+
+**Tavessa v1.0.0** is the frozen core MVP release, deployed and verified live end-to-end on 26 November 2026.
+
+This release represents a fully functioning demo of the multi-interface platform using the seeded demo restaurant **Zaika**:
+- **Golden-Path Live Verification:** Guest scans Table 5 QR code → views digital menu → places order `ZAIKA-0001` (Paneer Tikka Angara, ₹284.00) → order appears in real-time on Kitchen Display System (KDS) → moves from *Cooking* to *Ready* → staff marks *Served* on Staff Dashboard → bill `B-2026-11-26-001` requested → cash collection confirmed by waiter → receipt `R-2026-11-26-001` issued.
+- **Real-Time Synchronization:** Native WebSockets proved instant bi-directional state sync across every step without a page refresh (guest order tracking, KDS board, staff floor/billing queue).
+- **Deployment Architecture:** Vercel serves the static React frontend and reverse-proxies `/api/*` REST endpoints to Render. WebSockets connect directly to Render (`wss://tavessa-api.onrender.com/ws/*`) using single-use 60-second tickets. Render PostgreSQL 16 powers persistence.
+
+---
+
 ## Overview
 
 **Tavessa** is an end-to-end, real-time restaurant management system built with **FastAPI** and **React**. Guests scan a QR code at their table, browse the menu, place orders, track progress live, request help, split bills and pay — all from their phone, no app install needed. Meanwhile, the kitchen sees orders on a live display board, waiters manage floor operations, and the owner has a full admin dashboard with financials, audit logs and staff management.
 
-> **Cash-only in v1.** Online payments, delivery, and multi-tenancy are planned but not yet implemented.
+> **Cash-only in v1.** Online payments, delivery, and multi-tenancy are planned but not yet implemented. A bill is paid only when staff confirm cash collection — a guest tapping "Pay by Cash" only asks the waiter to collect.
 
 ---
 
@@ -35,11 +58,46 @@
 - **Bill & Receipt** — View itemized bill, split equally or custom, request cash payment, view receipt
 - **Real-time Notifications** — Live updates for order status, help call acknowledgements, bill changes
 
+#### Guest Menu
+![Guest digital menu showing dishes, categories, and add-to-cart actions](docs/stage9-screenshots/01-guest-menu.png)
+*Guest digital menu interface with category filtering, dietary indicators, and item cards.*
+
+#### Order Tracking Lifecycle
+![Live order tracking status: Placed](docs/stage9-screenshots/02-order-tracking-placed.png)
+*Live guest tracking: Order received and placed.*
+
+![Live order tracking status: Preparing](docs/stage9-screenshots/03-order-tracking-preparing.png)
+*Live guest tracking: Kitchen updates status to Preparing/Cooking.*
+
+![Live order tracking status: Served](docs/stage9-screenshots/04-order-tracking-served.png)
+*Live guest tracking: Waiter confirms order served at table.*
+
+#### Help Requests
+![Guest requesting table assistance](docs/stage9-screenshots/05-help-open.png)
+*Guest help request submitted with live waiting status.*
+
+![Guest help request acknowledged](docs/stage9-screenshots/06-help-acknowledged.png)
+*Live notification when staff acknowledges the guest's help request.*
+
+#### Billing & Receipt
+![Guest bill view with items, subtotal, and cash payment button](docs/stage9-screenshots/07-bill.png)
+*Itemized bill view on guest phone with cash payment request option.*
+
+![Paid receipt confirmation with receipt number](docs/stage9-screenshots/08-bill-paid-receipt.png)
+*Paid receipt displayed immediately after waiter confirms cash collection.*
+
+---
+
 ### 🖥️ Kitchen Display System (KDS)
 - **Three-column board** — New / Preparing / Ready
 - **One-tap transitions** — Move orders through the kitchen workflow
 - **Elapsed timers** — Server-computed time since placement
 - **WebSocket-driven** — Instant updates, no polling
+
+![Kitchen display system showing active tickets across workflow columns](docs/stage9-screenshots/09-kitchen.png)
+*Kitchen Display System (KDS) board with multi-column ticket management and elapsed timers.*
+
+---
 
 ### 👨‍🍳 Staff / Waiter Dashboard
 - **Floor Grid** — Live table status (available/occupied/cleaning) with order & help indicators
@@ -47,6 +105,11 @@
 - **Help Call Queue** — Acknowledge and resolve guest requests
 - **Billing Queue** — See payment-requested bills, confirm cash collection
 - **Bill Detail** — Full bill breakdown, split view, record payments with idempotent receipts
+
+![Staff billing queue showing pending cash collections](docs/stage9-screenshots/10-staff-billing.png)
+*Staff dashboard billing queue with order itemization, split breakdown, and cash payment confirmation.*
+
+---
 
 ### 🏢 Admin / Owner Panel
 - **Dashboard Overview** — Gross sales, cash collected, refunds, net cash, best sellers, recent activity
@@ -60,6 +123,20 @@
 - **Audit Logs** — Full audit trail of logins, password changes, voids, refunds, settings changes
 - **Restaurant Settings** — Edit name, tagline, cuisine, address, contact info
 
+#### Owner Overview
+![Admin overview dashboard with KPIs and sales breakdown](docs/stage9-screenshots/12-owner-overview.png)
+*Admin dashboard overview displaying gross sales, net cash, and key operational metrics.*
+
+#### Tax Configuration
+![Owner tax configuration panel](docs/stage9-screenshots/13-owner-tax.png)
+*Tax configuration interface supporting rate settings and inclusive/exclusive calculation modes.*
+
+#### Menu & Price Management
+![Owner menu management editing dish pricing](docs/stage9-screenshots/14-owner-menu-price.png)
+*Menu management interface for updating dish details, prices, and stock availability.*
+
+---
+
 ### 🔐 Security & Auth
 - **JWT Authentication** — Access + refresh token rotation with reuse detection
 - **Role-Based Access Control** — Owner / Manager / Waiter / Kitchen with configurable permissions
@@ -69,20 +146,32 @@
 
 ---
 
+## Limits of this demo
+
+This release is a frozen proof-of-concept demo, not an enterprise production system. Be aware of the following known limitations:
+
+1. **Free Render PostgreSQL Lifespan:** The free-tier database on Render is temporary and expires approximately 30 days after creation (around 26 December 2026). It contains demo data only and must never be used for real monetary transactions.
+2. **Cold Starts / Free Instance Sleep:** The backend runs on Render's free web service tier, which spins down after ~15 minutes of inactivity. The first request after a period of idle sleep takes approximately 50–70 seconds to wake up.
+3. **Tax Unconfigured by Default:** In the demo database, tax rate is 0% by default unless configured by the owner in the admin settings panel.
+4. **No Forgot-Password Flow:** Password resets are not self-service; staff and owner credentials must be managed via CLI scripts or an authenticated administrator.
+5. **QR Code Security Scope:** A photograph or forwarded link of a table QR code works from anywhere. The session token embedded in the URL is the sole authentication factor for a table session; physical presence is not cryptographically enforced.
+
+---
+
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
 | **Backend** | Python 3.12 · FastAPI · SQLAlchemy 2.0 · Alembic · Pydantic v2 |
-| **Frontend** | React 19 · TypeScript 7 · Vite 8 · TailwindCSS 4 · React Router 8 |
-| **State** | Zustand (client) · TanStack React Query (server state) |
-| **Database** | PostgreSQL 16 (production) · SQLite (tests) |
+| **Frontend** | React 19 · TypeScript · Vite · TailwindCSS 4 · React Router |
+| **State** | Zustand (client state) · TanStack React Query (server state cache) |
+| **Database** | PostgreSQL 16 (production on Render) · SQLite (unit tests) |
 | **Real-time** | WebSockets (FastAPI native) with single-use ticket authentication |
-| **Auth** | JWT (python-jose) · Argon2id (argon2-cffi) · Refresh token rotation |
+| **Auth** | JWT (python-jose) · Argon2id (argon2-cffi) · Refresh token rotation (`HttpOnly` cookie) |
 | **UI Components** | Radix UI · Lucide icons · shadcn/ui patterns |
-| **Testing** | pytest + httpx (backend) · Vitest + Testing Library (frontend) |
+| **Testing** | pytest + httpx (backend) · Vitest + Testing Library (frontend) · Playwright (E2E) |
+| **Deployment** | Vercel (frontend + REST proxy) · Render (backend API + PostgreSQL) |
 | **CI/CD** | GitHub Actions · Docker Compose |
-| **Linting** | oxlint (frontend) |
 
 ---
 
@@ -99,15 +188,22 @@
 │       └──────────────┴──────────┬───┴──────────────────┘            │
 │                            React SPA                                │
 │                     (Vite · React Router)                           │
-└─────────────────────────────┬───────────────────────────────────────┘
-                              │ REST + WebSocket
-┌─────────────────────────────┴───────────────────────────────────────┐
-│                        FastAPI Backend                              │
+└───────────────────────────┬─────────────┬───────────────────────────┘
+              REST /api/*   │             │ WSS /ws/* (Direct Ticket Auth)
+                            ▼             ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Vercel Edge Proxy                              │
+│              (Rewrites /api/* to Render Backend)                    │
+└───────────────────────────┬─────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│               FastAPI Modular Monolith (Render API)                 │
 │  ┌────────────────────────────────────────────────────────────────┐ │
 │  │  API Layer (/api/v1)                                          │ │
 │  │  guest · kitchen · staff · admin · orders · health · auth     │ │
 │  ├────────────────────────────────────────────────────────────────┤ │
-│  │  Service Layer                                                │ │
+│  │  Service Layer (Broadcast-Free Business Logic)                │ │
 │  │  table · order · kitchen · staff · billing · help · admin     │ │
 │  │  audit · tax                                                  │ │
 │  ├────────────────────────────────────────────────────────────────┤ │
@@ -128,17 +224,18 @@
                               │
                     ┌─────────┴─────────┐
                     │  PostgreSQL 16    │
-                    │  (Docker or local)│
+                    │  (Render private) │
                     └───────────────────┘
 ```
 
 ### Key Design Decisions
 
-- **Server-side pricing** — The backend recomputes every price from the menu at order time. No price or total from the client is ever trusted.
-- **Integer paise** — All money is stored and transmitted as integer paise (1/100 of a rupee). No floating point.
-- **Idempotent order placement** — Single-transaction crash-safe design using PostgreSQL's speculative insertion on a unique index. Claim + order + stored response are created atomically.
-- **Broadcast-after-commit** — WebSocket events are published only after the database transaction commits successfully. Services are broadcast-free; routes broadcast.
-- **No existence leakage** — Cross-tenant queries return 404, never 403.
+- **Modular Monolith** — Single codebase, no distributed microservices overhead; clean domain separation via services.
+- **Server-Side Pricing** — The backend recomputes every price from the menu at order time. No price or total from the client is ever trusted.
+- **Integer Paise** — All currency is stored and transmitted as integer paise (1/100 of a rupee, ₹1.00 = 100 paise) to prevent floating-point rounding bugs.
+- **Idempotent Order Placement** — Single-transaction crash-safe design using PostgreSQL speculative insertion on a unique index.
+- **Broadcast-After-Commit** — WebSocket events are published only after the database transaction commits successfully.
+- **Direct-to-Render WebSockets** — WebSocket connections connect directly to Render using single-use tickets, bypassing edge proxy limitations while keeping REST same-origin via Vercel rewrites.
 
 ---
 
@@ -147,13 +244,13 @@
 ### Prerequisites
 
 - **Python** 3.12+
-- **Node.js** 24+
-- **PostgreSQL** 16+ (or use Docker)
+- **Node.js** 20+ (Node 24 recommended)
+- **PostgreSQL** 16+ (or Docker)
 
 ### 1. Clone & configure
 
 ```bash
-git clone https://github.com/<your-username>/tavessa.git
+git clone https://github.com/sharmashivam102006-arch/tavessa.git
 cd tavessa
 cp .env.example .env
 ```
@@ -176,7 +273,7 @@ Create a database named `tavessa` with user `tavessa` / password `tavessa`, or u
 cd backend
 pip install -r requirements.txt
 
-# Run migrations & seed demo data
+# Run migrations & seed demo restaurant
 alembic upgrade head
 python -m app.seed          # seeds the "Zaika" demo restaurant
 
@@ -184,7 +281,7 @@ python -m app.seed          # seeds the "Zaika" demo restaurant
 uvicorn app.main:app --reload --port 8000
 ```
 
-The API is now live at **http://localhost:8000** with interactive docs at [/docs](http://localhost:8000/docs).
+The API is now live at **http://localhost:8000** with interactive docs at [/docs](http://localhost:8000/docs) (development mode only).
 
 ### 4. Frontend
 
@@ -198,14 +295,14 @@ The app is now live at **http://localhost:5173**.
 
 ### 5. Try it out
 
-| View | URL | Notes |
-|------|-----|-------|
-| **Home** | http://localhost:5173 | Landing page with role links |
-| **Guest Menu** | http://localhost:5173/t/demo | Demo table session (Table 5, Zaika) |
-| **Kitchen** | http://localhost:5173/kitchen | Dev key: `dev-kitchen-only` |
-| **Staff** | http://localhost:5173/staff | Dev key: `dev-staff-only` |
-| **Admin** | http://localhost:5173/admin | Login with seeded owner credentials |
-| **Login** | http://localhost:5173/login | Staff/kitchen/owner sign-in |
+| View | Local URL | Live Demo URL | Notes |
+|------|-----------|---------------|-------|
+| **Home** | http://localhost:5173 | https://tavessa.vercel.app | Landing page with role navigation |
+| **Guest Menu** | http://localhost:5173/t/demo | https://tavessa.vercel.app/t/demo | Demo table session (Table 5, Zaika) |
+| **Kitchen** | http://localhost:5173/kitchen | https://tavessa.vercel.app/kitchen | KDS screen (dev key local / staff login live) |
+| **Staff** | http://localhost:5173/staff | https://tavessa.vercel.app/staff | Waiter floor & billing dashboard |
+| **Admin** | http://localhost:5173/admin | https://tavessa.vercel.app/admin | Login with seeded owner credentials |
+| **Login** | http://localhost:5173/login | https://tavessa.vercel.app/login | Staff/kitchen/owner sign-in |
 
 ### Docker Compose (full stack)
 
@@ -213,13 +310,14 @@ The app is now live at **http://localhost:5173**.
 docker compose up --build
 ```
 
-This starts PostgreSQL, the API server (port 8000), and the frontend served by Nginx (port 5173).
+Starts PostgreSQL, the API server (port 8000), and the frontend served by Nginx (port 5173).
 
 ---
 
 ## API Reference
 
-Base URL: `http://localhost:8000/api/v1`
+Base URL (Local): `http://localhost:8000/api/v1`  
+Base URL (Live Proxy): `https://tavessa.vercel.app/api/v1`
 
 ### Guest Endpoints
 
@@ -228,7 +326,7 @@ Base URL: `http://localhost:8000/api/v1`
 | `GET` | `/guest/t/{table_token}` | Open / resume a table session |
 | `GET` | `/guest/session` | Current session info |
 | `GET` | `/guest/menu` | Browse menu (filter by category, search) |
-| `POST` | `/orders` | Place an order (idempotent) |
+| `POST` | `/orders` | Place an order (idempotent, server-priced) |
 | `GET` | `/guest/orders` | List session orders |
 | `GET` | `/guest/orders/{id}` | Order detail with tracking |
 | `DELETE` | `/orders/{id}` | Cancel order (placed only) |
@@ -238,7 +336,7 @@ Base URL: `http://localhost:8000/api/v1`
 | `GET` | `/guest/bill` | Get current bill |
 | `PATCH` | `/guest/bill/request-payment` | Request cash payment |
 | `POST` | `/guest/bill/splits` | Create equal / custom splits |
-| `GET` | `/guest/bill/receipt` | Get receipt (after payment) |
+| `GET` | `/guest/bill/receipt` | Get receipt (after cash payment confirmed) |
 
 ### Kitchen Endpoints
 
@@ -269,7 +367,7 @@ Base URL: `http://localhost:8000/api/v1`
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/admin/overview` | Dashboard KPIs |
+| `GET` | `/admin/overview` | Dashboard KPIs & financials |
 | `GET` | `/admin/orders` | Paginated order history |
 | `GET` | `/admin/bills` | All bills with financials |
 | `POST` | `/admin/bills/{id}/void` | Void a bill |
@@ -285,12 +383,12 @@ Base URL: `http://localhost:8000/api/v1`
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/auth/login` | Login (returns access + refresh tokens) |
+| `POST` | `/auth/login` | Login (returns access token + sets `HttpOnly` refresh cookie) |
 | `POST` | `/auth/refresh` | Rotate refresh token |
 | `POST` | `/auth/logout` | Revoke refresh token |
 | `POST` | `/auth/change-password` | Change password |
 | `GET` | `/auth/me` | Current user info |
-| `POST` | `/ws/tickets` | Issue WebSocket ticket (staff/kitchen) |
+| `POST` | `/ws/tickets` | Issue single-use WebSocket ticket |
 
 ### WebSocket Channels
 
@@ -298,9 +396,7 @@ Base URL: `http://localhost:8000/api/v1`
 |------|------|-------------|
 | `/ws/kitchen` | Ticket or dev key | Kitchen order events |
 | `/ws/staff` | Ticket or dev key | Staff events (orders, help calls, bills) |
-| `/ws/guest` | Ticket only | Guest session events (order status, help, billing) |
-
-Full interactive docs available at [http://localhost:8000/docs](http://localhost:8000/docs) (development only).
+| `/ws/guest` | Single-use ticket only | Guest session events (order status, help, billing) |
 
 ---
 
@@ -321,7 +417,7 @@ tavessa/
 │   │   │   ├── health.py           # Health check
 │   │   │   └── websocket.py        # WebSocket handlers
 │   │   ├── auth/                   # Authentication & authorization
-│   │   │   ├── bootstrap.py        # Seed default owner on startup
+│   │   │   ├── bootstrap.py        # Seed default owner CLI
 │   │   │   ├── deps.py             # Auth dependencies (JWT, permissions)
 │   │   │   ├── models.py           # User, RefreshSession, WsTicket models
 │   │   │   ├── permissions.py      # RBAC permission matrix
@@ -357,7 +453,7 @@ tavessa/
 │   │   │   └── tax_service.py      # Tax configuration & computation
 │   │   ├── main.py                 # FastAPI app factory
 │   │   └── seed.py                 # Demo data seeder (Zaika restaurant)
-│   ├── tests/                      # pytest test suite (25 test files)
+│   ├── tests/                      # pytest test suite
 │   ├── alembic.ini                 # Alembic configuration
 │   └── requirements.txt            # Python dependencies
 │
@@ -372,38 +468,38 @@ tavessa/
 │   │   │   └── staff/              # Waiter dashboard (floor grid, orders, billing, help calls)
 │   │   ├── shared/                 # Shared API client, types, components, stores
 │   │   └── lib/                    # Utility functions
+│   ├── vercel.json                 # Vercel proxy & SPA rewrite configuration
 │   ├── components.json             # shadcn/ui configuration
 │   ├── package.json
 │   ├── tsconfig.json
 │   └── vite.config.ts
 │
+├── docs/
+│   ├── deployment.md               # Production deployment guide
+│   ├── stage9-screenshots/         # Verified end-to-end screenshots
+│   ├── architecture.md             # Full architecture specification
+│   ├── api-plan.md                 # API specification
+│   └── database-design.md          # Schema & ER design
 ├── .github/workflows/ci.yml       # CI: backend tests + frontend typecheck & build
 ├── docker-compose.yml              # PostgreSQL + API + Frontend
 ├── Dockerfile.backend              # Python 3.12 slim
-├── Dockerfile.frontend             # Node 24 build → Nginx
+├── Dockerfile.frontend             # Node build → Nginx
+├── render.yaml                     # Render Blueprint specification
 ├── .env.example                    # Environment variable reference
 └── .gitignore
 ```
 
 ---
 
-## Development
+## Development & Verification
 
 ### Running Tests
 
-**Backend** (uses SQLite in-memory by default):
+**Backend** (uses SQLite in-memory for rapid unit tests):
 
 ```bash
 cd backend
 python -m pytest -q
-```
-
-For PostgreSQL-specific tests (concurrency, speculative insertion):
-
-```bash
-# Ensure PostgreSQL is running
-cd backend
-python -m pytest -q -m "not slow"
 ```
 
 **Frontend** (Vitest):
@@ -417,29 +513,8 @@ npm test
 
 ```bash
 cd backend
-
-# Create a new migration
-alembic revision --autogenerate -m "describe your change"
-
-# Apply migrations
 alembic upgrade head
-
-# Rollback one step
-alembic downgrade -1
 ```
-
-### Environment Variables
-
-See [`.env.example`](.env.example) for all configuration options. Key variables:
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `ENVIRONMENT` | `development` / `staging` / `production` | `development` |
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql+psycopg://tavessa:tavessa@localhost:5432/tavessa` |
-| `SECRET_KEY` | JWT signing key (must change in production) | `dev-only-change-me-in-production` |
-| `FRONTEND_URL` | Frontend origin for CORS | `http://localhost:5173` |
-| `KITCHEN_DEV_KEY` | Dev-only KDS access key | `dev-kitchen-only` |
-| `STAFF_DEV_KEY` | Dev-only staff access key | `dev-staff-only` |
 
 ---
 
@@ -464,22 +539,6 @@ See [`.env.example`](.env.example) for all configuration options. Key variables:
 
 ---
 
-## Development Roadmap
-
-The project was built incrementally across 8 stages:
-
-1. **Stage 1** — Project foundation: FastAPI + React skeletons, health check, Docker Compose, CI
-2. **Stage 2** — Guest interface: digital menu, cart, order review (frontend, demo data)
-3. **Stage 3** — Backend integration: models, migrations, seed data, QR sessions, server-priced orders, idempotency
-4. **Stage 4** — Kitchen Display System: kitchen API, order transitions, WebSocket, KDS board
-5. **Stage 5** — Staff dashboard: floor grid, active orders, serving, help call management
-6. **Stage 6** — Billing: bills, splits, cash payments, receipts, billing queue
-7. **Stage 7** — Admin panel: JWT auth, RBAC, users, menu CRUD, tax config, voids, refunds, audit logs
-8. **Stage 8** — Guest real-time: guest WebSocket tickets, live tracking, split/tax reconciliation
-9. **Stage 9** — Testing, security & reliability: full test pyramid, security pass with evidence, reliability failure modes, load sanity
-
----
-
 ## Contributing
 
 1. Fork the repository
@@ -498,9 +557,3 @@ Please ensure:
 ## License
 
 This project is provided as-is for educational and demonstration purposes.
-
----
-
-<p align="center">
-  Built with ❤️ using FastAPI + React
-</p>
