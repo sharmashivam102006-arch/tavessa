@@ -21,7 +21,7 @@
 
 ## Live Demo
 
-- **Frontend (Live App):** [https://tavessa.vercel.app/](https://tavessa.vercel.app/) (hosted on Vercel)
+- **Frontend (Live App):** [https://tavessa.cv/](https://tavessa.cv/) (hosted on Vercel)
 - **API Health:** [https://tavessa-api.onrender.com/api/v1/health](https://tavessa-api.onrender.com/api/v1/health) (hosted on Render; returns `{"status":"ok","database":"ok","environment":"production","version":"0.1.0"}`)
 - **v1.0.0 Release:** [https://github.com/sharmashivam102006-arch/tavessa/releases/tag/v1.0.0](https://github.com/sharmashivam102006-arch/tavessa/releases/tag/v1.0.0)
 - **Deployment Guide:** [docs/deployment.md](docs/deployment.md)
